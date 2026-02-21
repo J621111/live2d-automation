@@ -1,0 +1,80 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "live2d-automation"
+version = "0.1.0"
+description = "从单张照片自动生成完整的 Live2D 模型"
+readme = "README.md"
+license = {text = "MIT"}
+requires-python = ">=3.8"
+authors = [
+    {name = "Live2D Automation Team"}
+]
+keywords = ["live2d", "mcp", "automation", "avatar", "animation"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.8",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+]
+
+dependencies = [
+    "fastmcp>=0.4.0",
+    "pillow>=10.0.0",
+    "numpy>=1.24.0",
+    "opencv-python>=4.8.0",
+    "torch>=2.0.0",
+    "torchvision>=0.15.0",
+    "scikit-image>=0.21.0",
+    "scipy>=1.11.0",
+    "pydantic>=2.0.0",
+    "aiofiles>=23.0.0",
+    "loguru>=0.7.0",
+    "mediapipe>=0.10.0",
+    "onnxruntime-gpu>=1.16.0",
+    "ultralytics>=8.0.0",
+    "rembg>=2.0.0",
+    "psd-tools>=1.9.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0.0",
+    "pytest-asyncio>=0.21.0",
+    "black>=23.0.0",
+    "ruff>=0.1.0",
+    "mypy>=1.0.0",
+]
+
+[project.scripts]
+live2d-mcp = "live2d_automation.mcp_server.server:main"
+
+[project.urls]
+Homepage = "https://github.com/live2d-automation/live2d-automation"
+Repository = "https://github.com/live2d-automation/live2d-automation"
+Issues = "https://github.com/live2d-automation/live2d-automation/issues"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["live2d_automation*"]
+
+[tool.black]
+line-length = 100
+target-version = ["py38"]
+
+[tool.ruff]
+line-length = 100
+select = ["E", "F", "W", "I", "N", "UP", "B", "A", "C4", "SIM"]
+
+[tool.mypy]
+python_version = "3.8"
+warn_return_any = true
+warn_unused_configs = true
+ignore_missing_imports = true

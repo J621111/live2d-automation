@@ -1,0 +1,15 @@
+{
+  "mcpServers": {
+    "live2d-automation": {
+      "command": "python",
+      "args": [
+        "-m",
+        "live2d_automation.mcp_server.server"
+      ],
+      "cwd": "${workspaceFolder}",
+      "env": {
+        "PYTHONPATH": "${workspaceFolder}"
+      }
+    }
+  }
+}
