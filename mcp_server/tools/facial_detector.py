@@ -31,9 +31,7 @@ class FacialFeatureDetector:
             self.face_cascade = cv2.CascadeClassifier(
                 cv2.data.haarcascades + "haarcascade_frontalface_default.xml"
             )
-            self.eye_cascade = cv2.CascadeClassifier(
-                cv2.data.haarcascades + "haarcascade_eye.xml"
-            )
+            self.eye_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + "haarcascade_eye.xml")
             self.initialized = True
             logger.info("OpenCV cascades loaded")
         except Exception as e:
@@ -70,45 +68,46 @@ class FacialFeatureDetector:
         features = {"has_face": False, "face_bounds": None, "parts": {}}
 
         # 方法1: 使用 OpenCV 级联分类器
-        faces = self.face_cascade.detectMultiScale(
-            gray, scaleFactor=1.1, minNeighbors=5, minSize=(30, 30)
-        )
+        if self.face_cascade is not None and self.eye_cascade is not None:
+            faces = self.face_cascade.detectMultiScale(
+                gray, scaleFactor=1.1, minNeighbors=5, minSize=(30, 30)
+            )
 
-        if len(faces) > 0:
-            # 取最大的脸
-            face = max(faces, key=lambda x: x[2] * x[3])
-            x, y, w, h = face
-            features["has_face"] = True
-            features["face_bounds"] = {
-                "x": int(x),
-                "y": int(y),
-                "width": int(w),
-                "height": int(h),
-            }
-
-            # 在面部区域内检测眼睛
-            roi_gray = gray[y : y + h, x : x + w]
-            roi_color = image[y : y + h, x : x + w]
-
-            eyes = self.eye_cascade.detectMultiScale(roi_gray)
-
-            # 分类左右眼
-            left_eyes = []
-            right_eyes = []
-
-            for ex, ey, ew, eh in eyes:
-                if ex < w / 2:
-                    left_eyes.append((ex, ey, ew, eh))
-                else:
-                    right_eyes.append((ex, ey, ew, eh))
-
-            # 取最大的眼睛
-            if left_eyes:
-                ex, ey, ew, eh = max(left_eyes, key=lambda e: e[2] * e[3])
-                features["parts"]["left_eye"] = {
-                    "bounds": {"x": x + ex, "y": y + ey, "width": ew, "height": eh},
-                    "center": (x + ex + ew // 2, y + ey + eh // 2),
+            if len(faces) > 0:
+                # 取最大的脸
+                face = max(faces, key=lambda x: x[2] * x[3])
+                x, y, w, h = face
+                features["has_face"] = True
+                features["face_bounds"] = {
+                    "x": int(x),
+                    "y": int(y),
+                    "width": int(w),
+                    "height": int(h),
                 }
+
+                # 在面部区域内检测眼睛
+                roi_gray = gray[y : y + h, x : x + w]
+                roi_color = image[y : y + h, x : x + w]
+
+                eyes = self.eye_cascade.detectMultiScale(roi_gray)
+
+                # 分类左右眼
+                left_eyes = []
+                right_eyes = []
+
+                for ex, ey, ew, eh in eyes:
+                    if ex < w / 2:
+                        left_eyes.append((ex, ey, ew, eh))
+                    else:
+                        right_eyes.append((ex, ey, ew, eh))
+
+                # 取最大的眼睛
+                if left_eyes:
+                    ex, ey, ew, eh = max(left_eyes, key=lambda e: e[2] * e[3])
+                    features["parts"]["left_eye"] = {
+                        "bounds": {"x": x + ex, "y": y + ey, "width": ew, "height": eh},
+                        "center": (x + ex + ew // 2, y + ey + eh // 2),
+                    }
 
             if right_eyes:
                 ex, ey, ew, eh = max(right_eyes, key=lambda e: e[2] * e[3])
