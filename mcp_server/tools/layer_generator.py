@@ -108,19 +108,26 @@ class LayerGenerator:
         return await self.segmenter.segment_character(image_path)
 
     def _normalize_segments(self, segments: Dict[str, Any] = None) -> Dict[str, Any]:
-        """Normalize legacy analyze_photo body_parts output into parts."""
+        """Normalize legacy analyze_photo output into a flat parts mapping."""
         if not segments:
             return {"parts": {}}
 
         if segments.get("parts"):
             return segments
 
+        normalized_parts: Dict[str, Dict[str, Any]] = {}
         body_parts = segments.get("body_parts", {})
-        normalized_parts = {
-            name: data
-            for name, data in body_parts.items()
-            if isinstance(data, dict) and "bounds" in data
-        }
+        for name, data in body_parts.items():
+            if not isinstance(data, dict):
+                continue
+            if "bounds" in data:
+                normalized_parts[name] = data
+                continue
+
+            for nested_name, nested_data in data.items():
+                if isinstance(nested_data, dict) and "bounds" in nested_data:
+                    normalized_parts[nested_name] = nested_data
+
         return {**segments, "parts": normalized_parts}
 
     async def _create_layer_from_bounds(
