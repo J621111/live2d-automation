@@ -1,59 +1,50 @@
-# Live2D Automation 项目维护指南
+﻿# Live2D Automation Maintenance Guide
 
-## 项目结构
+## Project Layout
 
-```
-live2d_automation/
-├── core/                      # 核心模块
-│   ├── bone_system.py         # 骨骼系统
-│   ├── deformers.py           # 变形器系统
-│   ├── mesh_generator.py     # ArtMesh 网格生成
-│   └── parameter_system.py   # 参数系统
-├── mcp_server/                # MCP 服务器
-│   ├── server.py              # 主服务器入口
-│   └── tools/                 # 工具模块
-│       ├── image_processor.py    # 图像处理
-│       ├── segmentation.py        # 语义分割
-│       ├── layer_generator.py    # 分层生成
-│       ├── auto_rigger.py         # 自动绑定
-│       ├── physics_setup.py       # 物理设置
-│       ├── motion_generator.py    # 动作生成
-│       ├── facial_detector.py     # 面部检测
-│       └── moc3_generator.py      # 模型导出
-├── README.md                  # 项目说明
-├── requirements.txt           # 依赖列表
-└── pyproject.toml             # 项目配置
+```text
+core/                         Core mesh, parameter, and rigging helpers
+mcp_server/
+  server.py                   Stable MCP entrypoint
+  secure_server_impl.py       Session-aware hardened server implementation
+  tools/                      Image, face, physics, motion, and export helpers
+README.md                     User-facing usage guide
+requirements.txt              Runtime dependency list
+pyproject.toml                Packaging and tool configuration
 ```
 
-## 开发指南
+## Development
 
-### 安装开发依赖
+### Install Dev Dependencies
 
 ```bash
 pip install -e ".[dev]"
 ```
 
-### 代码规范
+### Checks
 
-- 使用 Black 格式化代码: `black .`
-- 使用 Ruff 检查: `ruff check .`
-- 使用 MyPy 类型检查: `mypy .`
+- Format: `black .`
+- Lint: `ruff check .`
+- Type check: `mypy .`
 
-### 测试
+### Tests
+
+This repo currently uses script-style validation instead of a dedicated `tests/` package.
 
 ```bash
-pytest tests/
+python test_simple.py
+python test_live2d_pipeline.py
+python test_optimized.py
 ```
 
-## 发布流程
+## Runtime Notes
 
-1. 更新版本号在 `pyproject.toml`
-2. 创建 git tag: `git tag v0.x.x`
-3. 构建包: `python -m build`
-4. 上传: `twine upload dist/*`
+- MCP entrypoint: `python -m mcp_server.server`
+- Session-based tools now return and consume `session_id`
+- `output_dir` must remain under the project `output/` directory
 
-## 注意事项
+## Release Notes
 
-- 本项目依赖深度学习模型，首次运行需要下载模型权重
-- 需要 GPU 才能流畅运行（推荐 8GB+ 显存）
-- 输出目录需要写入权限
+1. Update the version in `pyproject.toml`
+2. Build with `python -m build`
+3. Upload with `twine upload dist/*`
