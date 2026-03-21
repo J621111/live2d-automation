@@ -1,4 +1,4 @@
-﻿"""
+"""
 Hardened Live2D Automation MCP server implementation.
 """
 

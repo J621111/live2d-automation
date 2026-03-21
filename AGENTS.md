@@ -1,4 +1,4 @@
-﻿# Live2D Automation Maintenance Guide
+# Live2D Automation Maintenance Guide
 
 ## Project Layout
 

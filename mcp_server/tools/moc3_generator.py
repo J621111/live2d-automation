@@ -1,4 +1,4 @@
-﻿"""
+"""
 Live2D .moc3 file generator
 """
 

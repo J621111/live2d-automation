@@ -1,4 +1,4 @@
-﻿# Live2D Automation MCP Server
+# Live2D Automation MCP Server
 
 从单张照片自动生成完整的 Live2D 模型。
 

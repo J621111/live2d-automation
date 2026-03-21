@@ -1,4 +1,4 @@
-﻿from mcp_server.secure_server_impl import (
+from mcp_server.secure_server_impl import (
     analyze_photo,
     configure_physics,
     create_mesh,
