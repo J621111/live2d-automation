@@ -376,7 +376,8 @@ async def full_pipeline(
         )
         state["model_files"] = export_result.get("files", {})
 
-        results["model_files"] = export_result
+        results["model_files"] = export_result.get("files", {})
+        results["export_result"] = export_result
         results["steps"].append({"name": "export_model", "result": export_result})
 
         if export_result.get("status") != "success":
@@ -454,3 +455,4 @@ Use `full_pipeline` for one-shot generation:
 
 def main() -> None:
     mcp.run()
+

@@ -17,7 +17,7 @@ async def test_simple():
 
     try:
         print("\n[Test 1] Analyzing image...")
-        from mcp_server.secure_server_impl import analyze_photo, create_mesh, generate_layers
+        from mcp_server.server import analyze_photo, create_mesh, generate_layers
 
         result = await analyze_photo("ATRI.png")
         session_id = result["session_id"]
