@@ -3,3 +3,9 @@
 *.json text eol=lf
 *.toml text eol=lf
 *.txt text eol=lf
+*.yml text eol=lf
+*.yaml text eol=lf
+*.ini text eol=lf
+*.cfg text eol=lf
+*.ps1 text eol=lf
+*.sh text eol=lf
