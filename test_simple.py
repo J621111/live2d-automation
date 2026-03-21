@@ -1,4 +1,4 @@
-# -*- coding: utf-8 -*-
+﻿# -*- coding: utf-8 -*-
 """
 Simplified Live2D Pipeline Test
 """
@@ -8,61 +8,28 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
-sys.path.insert(0, str(Path(__file__).parent / "live2d_automation"))
 
 
 async def test_simple():
-    """Simplified test"""
     print("=" * 60)
     print("Live2D Automation Pipeline Test")
     print("=" * 60)
 
     try:
-        # Test 1: Image analysis
         print("\n[Test 1] Analyzing image...")
-        from live2d_automation.mcp_server.tools.image_processor import ImageProcessor
+        from mcp_server.secure_server_impl import analyze_photo, create_mesh, generate_layers
 
-        processor = ImageProcessor()
-        image_path = "ATRI.png"
+        result = await analyze_photo("ATRI.png")
+        session_id = result["session_id"]
+        print(f"  [OK] Session created: {session_id}")
 
-        import cv2
+        print("\n[Test 2] Generating layers...")
+        layers = await generate_layers(session_id, "output/test_simple")
+        print(f"  [OK] Layers generated: {layers['layers_generated']}")
 
-        img = cv2.imread(image_path)
-        if img is None:
-            print(f"  [ERROR] Cannot load image: {image_path}")
-            return
-
-        print(f"  [OK] Image loaded: {img.shape}")
-
-        # Test 2: Simple segmentation (using rembg)
-        print("\n[Test 2] Testing segmentation...")
-        try:
-            from rembg import remove
-
-            print("  [OK] rembg imported")
-        except ImportError:
-            print("  [WARN] rembg not available")
-
-        # Test 3: Generate layers
-        print("\n[Test 3] Generating layers...")
-        from live2d_automation.mcp_server.tools.layer_generator import LayerGenerator
-
-        generator = LayerGenerator()
-        print("  [OK] Layer generator initialized")
-
-        # Test 4: Create mesh
-        print("\n[Test 4] Creating mesh...")
-        from live2d_automation.core.mesh_generator import ArtMeshGenerator
-
-        mesh_gen = ArtMeshGenerator()
-        print("  [OK] Mesh generator initialized")
-
-        # Test 5: Rigging
-        print("\n[Test 5] Setting up rigging...")
-        from live2d_automation.mcp_server.tools.auto_rigger import AutoRigger
-
-        rigger = AutoRigger()
-        print("  [OK] Rigger initialized")
+        print("\n[Test 3] Creating mesh...")
+        meshes = await create_mesh(session_id)
+        print(f"  [OK] Meshes created: {meshes['meshes_created']}")
 
         print("\n" + "=" * 60)
         print("All tests passed!")

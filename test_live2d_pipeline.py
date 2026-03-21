@@ -1,28 +1,24 @@
-"""
-测试 Live2D 自动化流水线
+﻿"""
+娴嬭瘯 Live2D 鑷姩鍖栨祦姘寸嚎
 """
 
 import asyncio
 import sys
 from pathlib import Path
 
-# 添加项目路径
 project_root = Path(__file__).parent
 sys.path.insert(0, str(project_root))
-sys.path.insert(0, str(project_root / "live2d_automation"))
 
-from live2d_automation.mcp_server.server import full_pipeline
+from mcp_server.server import full_pipeline
 
 
 async def test_pipeline():
-    """测试完整流水线"""
     print("=" * 60)
     print("Live2D Automation Pipeline Test")
     print("=" * 60)
 
-    # 输入照片路径
-    input_image = "ATRI.png"  # 根目录下的照片
-    output_dir = "live2d_automation/output/ATRI"
+    input_image = "ATRI.png"
+    output_dir = "output/ATRI"
     model_name = "ATRI"
 
     print(f"\nInput Image: {input_image}")
@@ -31,7 +27,6 @@ async def test_pipeline():
     print("\n" + "-" * 60)
 
     try:
-        # 运行完整流水线
         result = await full_pipeline(
             image_path=input_image,
             output_dir=output_dir,
@@ -40,39 +35,20 @@ async def test_pipeline():
         )
 
         print("\n" + "=" * 60)
-        print("[OK] 测试结果")
+        print("[OK] 娴嬭瘯缁撴灉")
         print("=" * 60)
-        print(f"\n状态: {result.get('status', 'unknown')}")
-        print(f"消息: {result.get('message', '')}")
+        print(f"\n鐘舵€? {result.get('status', 'unknown')}")
+        print(f"娑堟伅: {result.get('message', '')}")
 
         if result.get("status") == "success":
-            print(f"\n📁 输出路径: {result.get('output_path', '')}")
-            print(f"📊 执行步骤: {len(result.get('steps', []))} 个")
-
-            for i, step in enumerate(result.get("steps", []), 1):
-                step_name = step.get("name", "")
-                step_result = step.get("result", {})
-                print(f"\n  步骤 {i}: {step_name}")
-                if "message" in step_result:
-                    print(f"    → {step_result['message']}")
-
-            # 复制到 live2d_view
-            print("\n🔄 复制模型到 live2d_view...")
-            import shutil
-
-            src = Path(output_dir)
-            dst = Path("live2d_view/models/ATRI_Live2D")
-
-            if src.exists():
-                if dst.exists():
-                    shutil.rmtree(dst)
-                shutil.copytree(src, dst)
-                print(f"[OK] 模型已复制到: {dst}")
+            print(f"\nSession ID: {result.get('session_id', '')}")
+            print(f"杈撳嚭璺緞: {result.get('output_path', '')}")
+            print(f"鎵ц姝ラ: {len(result.get('steps', []))}")
         else:
-            print(f"\n[ERROR] 错误: {result.get('error', '未知错误')}")
+            print(f"\n[ERROR] 閿欒: {result.get('error', '鏈煡閿欒')}")
 
     except Exception as e:
-        print(f"\n[ERROR] 测试失败: {e}")
+        print(f"\n[ERROR] 娴嬭瘯澶辫触: {e}")
         import traceback
 
         traceback.print_exc()
