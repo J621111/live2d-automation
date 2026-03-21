@@ -3,6 +3,7 @@
 使用精确分割生成 Live2D 所需图层文件
 """
 
+import asyncio
 import numpy as np
 from pathlib import Path
 from typing import Dict, List, Any
@@ -13,7 +14,9 @@ import io
 
 
 class LayerGenerator:
-    """Live2D 图层生成器 v2 - 精确版"""
+    """Live2D layer generator v2."""
+
+    PRECISE_SEGMENT_TIMEOUT_SECONDS = 15
 
     def __init__(self):
         self.layer_order = [
@@ -53,36 +56,20 @@ class LayerGenerator:
     async def generate(
         self, image_path: str, segments: Dict = None, output_dir: str = None
     ) -> List[Dict]:
-        """
-        生成分层文件
-
-        Args:
-            image_path: 原始图像路径
-            segments: 分割信息（可选）
-            output_dir: 输出目录
-
-        Returns:
-            生成的图层列表
-        """
-        await self.initialize()
-
+        """Generate layer files from detected parts."""
         output_path = Path(output_dir) if output_dir else Path("output")
         output_path.mkdir(parents=True, exist_ok=True)
 
-        # 加载原始图像
         image = Image.open(image_path).convert("RGBA")
-
         layers = []
 
-        # 如果没有传入 segments，使用精确分割
-        if segments is None or not segments.get("parts"):
+        normalized_segments = self._normalize_segments(segments)
+        if not normalized_segments.get("parts"):
             logger.info("Using precise segmentation...")
-            segments = await self._precise_segment(image_path)
+            normalized_segments = await self._precise_segment(image_path)
 
-        # 获取部位
-        parts = segments.get("parts", {})
+        parts = normalized_segments.get("parts", {})
 
-        # 生成各部位图层
         for part_name, part_data in parts.items():
             if part_data and "bounds" in part_data:
                 layer = await self._create_layer_from_bounds(
@@ -95,16 +82,46 @@ class LayerGenerator:
                 if layer:
                     layers.append(layer)
 
-        # 排序图层
         layers = self._sort_layers(layers)
 
         logger.info(f"Generated {len(layers)} layers")
         return layers
 
     async def _precise_segment(self, image_path: str) -> Dict:
-        """使用精确分割"""
-        result = await self.segmenter.segment_character(image_path)
-        return result
+        """Run precise segmentation with a bounded wait time."""
+        try:
+            return await asyncio.wait_for(
+                self._run_precise_segment(image_path),
+                timeout=self.PRECISE_SEGMENT_TIMEOUT_SECONDS,
+            )
+        except asyncio.TimeoutError:
+            logger.warning("Precise segmentation timed out, falling back to empty parts")
+            return {"parts": {}}
+
+    async def _run_precise_segment(self, image_path: str) -> Dict:
+        await self.initialize()
+
+        if self.segmenter is None:
+            logger.warning("Precise segmenter unavailable, returning empty parts")
+            return {"parts": {}}
+
+        return await self.segmenter.segment_character(image_path)
+
+    def _normalize_segments(self, segments: Dict[str, Any] = None) -> Dict[str, Any]:
+        """Normalize legacy analyze_photo body_parts output into parts."""
+        if not segments:
+            return {"parts": {}}
+
+        if segments.get("parts"):
+            return segments
+
+        body_parts = segments.get("body_parts", {})
+        normalized_parts = {
+            name: data
+            for name, data in body_parts.items()
+            if isinstance(data, dict) and "bounds" in data
+        }
+        return {**segments, "parts": normalized_parts}
 
     async def _create_layer_from_bounds(
         self,
