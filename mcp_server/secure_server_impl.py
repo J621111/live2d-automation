@@ -29,6 +29,7 @@ mcp = FastMCP("live2d-automation")
 
 OUTPUT_ROOT = (project_root / "output").resolve()
 MAX_IMAGE_BYTES = 20 * 1024 * 1024
+MAX_SESSIONS = 32
 ALLOWED_IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".webp"}
 SESSION_ID_RE = re.compile(r"^[A-Za-z0-9_-]{8,64}$")
 MODEL_NAME_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
@@ -68,12 +69,20 @@ def _new_session_id() -> str:
     return f"job_{uuid.uuid4().hex[:12]}"
 
 
+def _prune_sessions() -> None:
+    while len(session_store) >= MAX_SESSIONS:
+        oldest_session_id = next(iter(session_store))
+        session_store.pop(oldest_session_id, None)
+
+
 def _ensure_session(session_id: Optional[str] = None, reset: bool = False) -> str:
     if session_id is None:
         session_id = _new_session_id()
     if not SESSION_ID_RE.match(session_id):
         raise InputValidationError("session_id contains unsupported characters.")
     if reset or session_id not in session_store:
+        if session_id not in session_store:
+            _prune_sessions()
         session_store[session_id] = _empty_state()
     return session_id
 
@@ -360,18 +369,24 @@ async def full_pipeline(
 
         exporter = Moc3Exporter()
         state = _get_session_state(session_id)
-        model_files = await exporter.export(
+        export_result = await exporter.export(
             model_name=safe_model_name,
             output_dir=str(resolved_output_dir),
             state=state,
         )
-        state["model_files"] = model_files
+        state["model_files"] = export_result.get("files", {})
 
-        results["model_files"] = model_files
-        results["steps"].append({"name": "export_model", "result": model_files})
-        results["status"] = "success"
-        results["message"] = f"Live2D model '{safe_model_name}' generated successfully."
-        results["output_path"] = str(resolved_output_dir)
+        results["model_files"] = export_result
+        results["steps"].append({"name": "export_model", "result": export_result})
+
+        if export_result.get("status") != "success":
+            results["status"] = "error"
+            results["error"] = "export_failed"
+            results["message"] = "Model export failed before all required files were created."
+        else:
+            results["status"] = "success"
+            results["message"] = f"Live2D model '{safe_model_name}' generated successfully."
+            results["output_path"] = str(resolved_output_dir)
 
     except InputValidationError as exc:
         logger.warning(f"Validation error in session {session_id}: {exc}")
@@ -393,7 +408,7 @@ def get_status() -> str:
         _status_summary(session_id, state)
         for session_id, state in session_store.items()
     ]
-    return json.dumps({"active_sessions": len(summaries), "sessions": summaries}, indent=2)
+    return json.dumps({"active_sessions": len(summaries), "sessions": summaries[-10:]}, indent=2)
 
 
 @mcp.resource("live2d://templates")
