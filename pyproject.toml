@@ -54,7 +54,7 @@ dev = [
 ]
 
 [project.scripts]
-live2d-mcp = "live2d_automation.mcp_server.server:main"
+live2d-mcp = "mcp_server.server:main"
 
 [project.urls]
 Homepage = "https://github.com/live2d-automation/live2d-automation"
@@ -63,7 +63,7 @@ Issues = "https://github.com/live2d-automation/live2d-automation/issues"
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["live2d_automation*"]
+include = ["core", "core.*", "mcp_server", "mcp_server.*"]
 
 [tool.black]
 line-length = 100
