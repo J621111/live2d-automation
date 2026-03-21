@@ -1,4 +1,4 @@
-﻿# -*- coding: utf-8 -*-
+# -*- coding: utf-8 -*-
 """
 Simplified Live2D Pipeline Test
 """
@@ -15,31 +15,30 @@ async def test_simple():
     print("Live2D Automation Pipeline Test")
     print("=" * 60)
 
-    try:
-        print("\n[Test 1] Analyzing image...")
-        from mcp_server.server import analyze_photo, create_mesh, generate_layers
+    print("\n[Test 1] Analyzing image...")
+    from mcp_server.server import analyze_photo, create_mesh, generate_layers
 
-        result = await analyze_photo("ATRI.png")
-        session_id = result["session_id"]
-        print(f"  [OK] Session created: {session_id}")
+    result = await analyze_photo("ATRI.png")
+    if result.get("status") != "success":
+        raise AssertionError(f"Photo analysis failed: {result}")
+    session_id = result["session_id"]
+    print(f"  [OK] Session created: {session_id}")
 
-        print("\n[Test 2] Generating layers...")
-        layers = await generate_layers(session_id, "output/test_simple")
-        print(f"  [OK] Layers generated: {layers['layers_generated']}")
+    print("\n[Test 2] Generating layers...")
+    layers = await generate_layers(session_id, "output/test_simple")
+    if layers.get("status") != "success":
+        raise AssertionError(f"Layer generation failed: {layers}")
+    print(f"  [OK] Layers generated: {layers['layers_generated']}")
 
-        print("\n[Test 3] Creating mesh...")
-        meshes = await create_mesh(session_id)
-        print(f"  [OK] Meshes created: {meshes['meshes_created']}")
+    print("\n[Test 3] Creating mesh...")
+    meshes = await create_mesh(session_id)
+    if meshes.get("status") != "success":
+        raise AssertionError(f"Mesh creation failed: {meshes}")
+    print(f"  [OK] Meshes created: {meshes['meshes_created']}")
 
-        print("\n" + "=" * 60)
-        print("All tests passed!")
-        print("=" * 60)
-
-    except Exception as e:
-        print(f"\n[ERROR] {e}")
-        import traceback
-
-        traceback.print_exc()
+    print("\n" + "=" * 60)
+    print("All tests passed!")
+    print("=" * 60)
 
 
 if __name__ == "__main__":

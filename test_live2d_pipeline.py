@@ -1,5 +1,5 @@
-﻿"""
-娴嬭瘯 Live2D 鑷姩鍖栨祦姘寸嚎
+"""
+Test Live2D automation pipeline.
 """
 
 import asyncio
@@ -26,32 +26,37 @@ async def test_pipeline():
     print(f"Model Name: {model_name}")
     print("\n" + "-" * 60)
 
-    try:
-        result = await full_pipeline(
-            image_path=input_image,
-            output_dir=output_dir,
-            model_name=model_name,
-            motion_types=["idle", "tap", "move"],
-        )
+    result = await full_pipeline(
+        image_path=input_image,
+        output_dir=output_dir,
+        model_name=model_name,
+        motion_types=["idle", "tap", "move"],
+    )
 
-        print("\n" + "=" * 60)
-        print("[OK] 娴嬭瘯缁撴灉")
-        print("=" * 60)
-        print(f"\n鐘舵€? {result.get('status', 'unknown')}")
-        print(f"娑堟伅: {result.get('message', '')}")
+    print("\n" + "=" * 60)
+    print("[OK] Test Result")
+    print("=" * 60)
+    print(f"\nStatus: {result.get('status', 'unknown')}")
+    print(f"Message: {result.get('message', '')}")
 
-        if result.get("status") == "success":
-            print(f"\nSession ID: {result.get('session_id', '')}")
-            print(f"杈撳嚭璺緞: {result.get('output_path', '')}")
-            print(f"鎵ц姝ラ: {len(result.get('steps', []))}")
-        else:
-            print(f"\n[ERROR] 閿欒: {result.get('error', '鏈煡閿欒')}")
+    if result.get("status") != "success":
+        raise AssertionError(f"Pipeline failed: {result.get('error', 'unknown_error')}")
 
-    except Exception as e:
-        print(f"\n[ERROR] 娴嬭瘯澶辫触: {e}")
-        import traceback
+    model_files = result.get("model_files", {})
+    export_result = result.get("export_result", {})
+    required_files = {"model3.json", "model3.moc"}
+    missing = sorted(required_files.difference(model_files))
 
-        traceback.print_exc()
+    print(f"\nSession ID: {result.get('session_id', '')}")
+    print(f"Output Path: {result.get('output_path', '')}")
+    print(f"Executed Steps: {len(result.get('steps', []))}")
+    print(f"Model Files: {sorted(model_files.keys())}")
+    print(f"Export Status: {export_result.get('status', 'unknown')}")
+
+    if missing:
+        raise AssertionError(f"Missing expected model files: {missing}")
+    if export_result.get("status") != "success":
+        raise AssertionError("Export result did not report success")
 
     print("\n" + "=" * 60)
 
