@@ -12,7 +12,8 @@ PYTEST_TEMP_ROOT = Path(__file__).resolve().parents[1] / "output" / "pytest_tmp_
 
 @pytest.fixture
 def tmp_path() -> Iterator[Path]:
-    # Windows tempdir creation is unreliable in this environment, so tests use a managed workspace root.
+    # Windows tempdir creation is unreliable in this environment.
+    # Tests use a managed workspace root instead.
     PYTEST_TEMP_ROOT.mkdir(parents=True, exist_ok=True)
     path = PYTEST_TEMP_ROOT / f"test_{uuid.uuid4().hex}"
     path.mkdir(parents=True, exist_ok=False)

@@ -68,6 +68,15 @@ include = ["core", "core.*", "mcp_server", "mcp_server.*"]
 [tool.black]
 line-length = 100
 target-version = ["py310"]
+extend-exclude = '''
+(?x)(
+    ^/output(?:/|$)
+  | ^/\.pytest_tmp(?:/|$)
+  | ^/pytest-cache-files-.*
+  | ^/test_(live2d_pipeline|optimized|simple)\.py$
+  | ^/core/deformers\.py$
+)
+'''
 
 [tool.ruff]
 line-length = 100

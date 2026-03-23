@@ -118,9 +118,7 @@ class ArtMeshGenerator:
 
     def _triangle_area(self, tri: np.ndarray) -> float:
         p1, p2, p3 = tri
-        area = 0.5 * abs(
-            (p2[0] - p1[0]) * (p3[1] - p1[1]) - (p3[0] - p1[0]) * (p2[1] - p1[1])
-        )
+        area = 0.5 * abs((p2[0] - p1[0]) * (p3[1] - p1[1]) - (p3[0] - p1[0]) * (p2[1] - p1[1]))
         return float(area)
 
     def _create_simple_grid(self, width: float, height: float) -> np.ndarray:
