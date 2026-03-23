@@ -8,6 +8,7 @@ mcp_server/
   server.py                   Stable MCP entrypoint
   secure_server_impl.py       Session-aware hardened server implementation
   tools/                      Image, face, physics, motion, and export helpers
+tests/                        Pytest coverage for server security and pipeline contracts
 README.md                     User-facing usage guide
 requirements.txt              Runtime dependency list
 pyproject.toml                Packaging and tool configuration
@@ -29,7 +30,13 @@ pip install -e ".[dev]"
 
 ### Tests
 
-This repo currently uses script-style validation instead of a dedicated `tests/` package.
+Primary automated coverage lives in the `tests/` package.
+
+```bash
+python -m pytest -q
+```
+
+Legacy script-style validation is still available for manual checks:
 
 ```bash
 python test_simple.py
