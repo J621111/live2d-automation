@@ -77,20 +77,16 @@ extend-exclude = [
     "test_live2d_pipeline.py",
     "test_optimized.py",
     "test_simple.py",
-    "core/bone_system.py",
     "core/deformers.py",
-    "core/parameter_system.py",
-    "mcp_server/secure_server_impl.py",
-    "mcp_server/tools/auto_rigger.py",
-    "mcp_server/tools/facial_detector.py",
-    "mcp_server/tools/layer_generator.py",
-    "mcp_server/tools/moc3_generator.py",
-    "mcp_server/tools/physics_setup.py",
-    "mcp_server/tools/segmentation.py",
 ]
 
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "N", "UP", "B", "A", "C4", "SIM"]
+
+[tool.ruff.lint.per-file-ignores]
+"mcp_server/secure_server_impl.py" = ["E402", "E501"]
+"mcp_server/tools/auto_rigger.py" = ["E501"]
+"mcp_server/tools/moc3_generator.py" = ["E501"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
@@ -104,4 +100,4 @@ warn_return_any = true
 warn_unused_configs = true
 ignore_missing_imports = true
 follow_imports = "skip"
-exclude = '(?x)(^output(?:[\\/]|$)|^\.pytest_tmp(?:[\\/]|$)|^pytest-cache-files-.*|^test_(live2d_pipeline|optimized|simple)\.py$|^core[\\/](bone_system|deformers|parameter_system|mesh_generator)\.py$|^mcp_server[\\/]secure_server_impl\.py$|^mcp_server[\\/]tools[\\/](auto_rigger|facial_detector|layer_generator|moc3_generator|physics_setup|segmentation)\.py$)'
+exclude = '(?x)(^output(?:[\\/]|$)|^\.pytest_tmp(?:[\\/]|$)|^pytest-cache-files-.*|^test_(live2d_pipeline|optimized|simple)\.py$|^core[\\/]deformers\.py$)'

@@ -8,8 +8,8 @@ from typing import Any, cast
 
 import cv2
 import numpy as np
-from PIL import Image
 from loguru import logger
+from PIL import Image
 
 JsonDict = dict[str, Any]
 JsonList = list[JsonDict]

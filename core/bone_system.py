@@ -3,9 +3,10 @@
 Live2D 骨骼管理和动画
 """
 
-import numpy as np
-from typing import Any, Dict, List, Optional, cast
 from dataclasses import dataclass, field
+from typing import cast
+
+import numpy as np
 from loguru import logger
 
 
@@ -15,27 +16,27 @@ class Bone:
 
     id: str
     name: str
-    parent_id: Optional[str] = None
-    position: Dict[str, float] = field(default_factory=lambda: {"x": 0, "y": 0})
+    parent_id: str | None = None
+    position: dict[str, float] = field(default_factory=lambda: {"x": 0, "y": 0})
     rotation: float = 0.0
-    scale: Dict[str, float] = field(default_factory=lambda: {"x": 1, "y": 1})
+    scale: dict[str, float] = field(default_factory=lambda: {"x": 1, "y": 1})
 
     # 运行时数据
-    world_position: Dict[str, float] = field(default_factory=lambda: {"x": 0, "y": 0})
+    world_position: dict[str, float] = field(default_factory=lambda: {"x": 0, "y": 0})
     world_rotation: float = 0.0
-    world_scale: Dict[str, float] = field(default_factory=lambda: {"x": 1, "y": 1})
+    world_scale: dict[str, float] = field(default_factory=lambda: {"x": 1, "y": 1})
 
     # 子骨骼
-    children: List[str] = field(default_factory=list)
+    children: list[str] = field(default_factory=list)
 
 
 class BoneSystem:
     """Live2D 骨骼系统"""
 
     def __init__(self):
-        self.bones: Dict[str, Bone] = {}
-        self.root_bones: List[str] = []
-        self.bind_poses: Dict[str, Dict] = {}
+        self.bones: dict[str, Bone] = {}
+        self.root_bones: list[str] = []
+        self.bind_poses: dict[str, dict] = {}
 
     def add_bone(self, bone: Bone):
         """添加骨骼"""
@@ -49,7 +50,7 @@ class BoneSystem:
 
         logger.debug(f"添加骨骼: {bone.id}")
 
-    def create_bone(self, bone_data: Dict) -> Bone:
+    def create_bone(self, bone_data: dict) -> Bone:
         """从字典创建骨骼"""
         bone = Bone(
             id=bone_data["id"],
@@ -70,7 +71,7 @@ class BoneSystem:
         self.add_bone(bone)
         return bone
 
-    def get_bone(self, bone_id: str) -> Optional[Bone]:
+    def get_bone(self, bone_id: str) -> Bone | None:
         """获取骨骼"""
         return self.bones.get(bone_id)
 
@@ -79,7 +80,7 @@ class BoneSystem:
         for root_id in self.root_bones:
             self._update_bone_transform(self.bones[root_id], None)
 
-    def _update_bone_transform(self, bone: Bone, parent: Optional[Bone]):
+    def _update_bone_transform(self, bone: Bone, parent: Bone | None):
         """递归更新骨骼变换"""
         if parent:
             # 计算世界变换
@@ -154,27 +155,28 @@ class BoneSystem:
         cos_r = np.cos(angle_rad)
         sin_r = np.sin(angle_rad)
 
-        matrix = cast(np.ndarray, np.array(
-            [
+        matrix = cast(
+            np.ndarray,
+            np.array(
                 [
-                    cos_r * bone.world_scale["x"],
-                    -sin_r * bone.world_scale["y"],
-                    bone.world_position["x"],
-                ],
-                [
-                    sin_r * bone.world_scale["x"],
-                    cos_r * bone.world_scale["y"],
-                    bone.world_position["y"],
-                ],
-                [0, 0, 1],
-            ]
-        ))
+                    [
+                        cos_r * bone.world_scale["x"],
+                        -sin_r * bone.world_scale["y"],
+                        bone.world_position["x"],
+                    ],
+                    [
+                        sin_r * bone.world_scale["x"],
+                        cos_r * bone.world_scale["y"],
+                        bone.world_position["y"],
+                    ],
+                    [0, 0, 1],
+                ]
+            ),
+        )
 
         return matrix
 
-    def transform_point(
-        self, bone_id: str, local_point: Dict[str, float]
-    ) -> Dict[str, float]:
+    def transform_point(self, bone_id: str, local_point: dict[str, float]) -> dict[str, float]:
         """
         将局部坐标转换为世界坐标
 
@@ -193,8 +195,8 @@ class BoneSystem:
         return {"x": cast(float, transformed[0]), "y": cast(float, transformed[1])}
 
     def inverse_transform_point(
-        self, bone_id: str, world_point: Dict[str, float]
-    ) -> Dict[str, float]:
+        self, bone_id: str, world_point: dict[str, float]
+    ) -> dict[str, float]:
         """
         将世界坐标转换为局部坐标
 
@@ -213,9 +215,7 @@ class BoneSystem:
 
         return {"x": cast(float, transformed[0]), "y": cast(float, transformed[1])}
 
-    def look_at(
-        self, bone_id: str, target: Dict[str, float], up_vector: Optional[Dict] = None
-    ):
+    def look_at(self, bone_id: str, target: dict[str, float], up_vector: dict | None = None):
         """
         让骨骼朝向目标点
 
@@ -252,7 +252,7 @@ class BoneSystem:
         self.update_transforms()
         logger.debug("重置到绑定姿势")
 
-    def export_to_json(self) -> Dict:
+    def export_to_json(self) -> dict:
         """导出为 Live2D JSON 格式"""
         return {
             "Version": 3,

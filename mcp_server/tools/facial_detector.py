@@ -6,8 +6,8 @@ from pathlib import Path
 from typing import Any
 
 import cv2
-from PIL import Image
 from loguru import logger
+from PIL import Image
 
 JsonDict = dict[str, Any]
 JsonList = list[JsonDict]
@@ -38,7 +38,9 @@ class FacialFeatureDetector:
             "maximum": round(max(confidences), 3),
         }
 
-    def _parts_from_face_bounds(self, x: int, y: int, w: int, h: int, confidence: float) -> JsonDict:
+    def _parts_from_face_bounds(
+        self, x: int, y: int, w: int, h: int, confidence: float
+    ) -> JsonDict:
         eye_h = int(h * 0.16)
         brow_h = max(1, int(h * 0.08))
         mouth_h = max(1, int(h * 0.2))
@@ -233,8 +235,10 @@ class FacialFeatureDetector:
             features = self._detect_anime_face(width, height)
             features["detector_used"] = "heuristic"
             notes = "; ".join(self.initialization_notes)
-            features["fallback_reason"] = features.get("fallback_reason") or notes or (
-                "no face detected by available backends"
+            features["fallback_reason"] = (
+                features.get("fallback_reason")
+                or notes
+                or ("no face detected by available backends")
             )
 
         features["confidence_summary"] = self._confidence_summary(features.get("parts", {}))

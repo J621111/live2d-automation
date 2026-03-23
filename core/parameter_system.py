@@ -3,9 +3,10 @@
 Live2D 参数管理和插值
 """
 
-import numpy as np
-from typing import Any, Dict, List, Optional, cast
 from dataclasses import dataclass
+from typing import cast
+
+import numpy as np
 from loguru import logger
 
 
@@ -40,16 +41,16 @@ class ParameterSystem:
     """Live2D 参数系统"""
 
     def __init__(self):
-        self.parameters: Dict[str, Parameter] = {}
-        self.groups: Dict[str, List[str]] = {}
-        self.blend_shapes: Dict[str, Dict] = {}
+        self.parameters: dict[str, Parameter] = {}
+        self.groups: dict[str, list[str]] = {}
+        self.blend_shapes: dict[str, dict] = {}
 
     def add_parameter(self, param: Parameter):
         """添加参数"""
         self.parameters[param.id] = param
         logger.debug(f"添加参数: {param.id}")
 
-    def add_parameters(self, param_list: List[Dict]):
+    def add_parameters(self, param_list: list[dict]):
         """批量添加参数"""
         for p in param_list:
             param = Parameter(
@@ -61,7 +62,7 @@ class ParameterSystem:
             )
             self.add_parameter(param)
 
-    def get_parameter(self, param_id: str) -> Optional[Parameter]:
+    def get_parameter(self, param_id: str) -> Parameter | None:
         """获取参数"""
         return self.parameters.get(param_id)
 
@@ -70,12 +71,12 @@ class ParameterSystem:
         if param_id in self.parameters:
             self.parameters[param_id].set_value(value)
 
-    def set_values(self, values: Dict[str, float]):
+    def set_values(self, values: dict[str, float]):
         """批量设置参数值"""
         for param_id, value in values.items():
             self.set_value(param_id, value)
 
-    def create_group(self, name: str, param_ids: List[str]):
+    def create_group(self, name: str, param_ids: list[str]):
         """创建参数组"""
         self.groups[name] = param_ids
         logger.debug(f"创建参数组: {name} ({len(param_ids)} 个参数)")
@@ -130,7 +131,7 @@ class ParameterSystem:
         else:
             return t
 
-    def create_blend_shape(self, name: str, targets: Dict[str, float]):
+    def create_blend_shape(self, name: str, targets: dict[str, float]):
         """
         创建混合形状（Blend Shape）
 
@@ -158,9 +159,7 @@ class ParameterSystem:
             if param_id in self.parameters:
                 param = self.parameters[param_id]
                 # 插值到目标值
-                new_value = (
-                    param.default_value + (target_value - param.default_value) * weight
-                )
+                new_value = param.default_value + (target_value - param.default_value) * weight
                 param.set_value(new_value)
 
     def reset_all(self):
@@ -169,13 +168,11 @@ class ParameterSystem:
             param.current_value = param.default_value
         logger.debug("重置所有参数")
 
-    def get_state(self) -> Dict[str, float]:
+    def get_state(self) -> dict[str, float]:
         """获取当前所有参数值"""
-        return {
-            param_id: param.current_value for param_id, param in self.parameters.items()
-        }
+        return {param_id: param.current_value for param_id, param in self.parameters.items()}
 
-    def export_to_json(self) -> Dict:
+    def export_to_json(self) -> dict:
         """导出为 Live2D JSON 格式"""
         return {
             "Version": 3,

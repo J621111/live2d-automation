@@ -22,7 +22,9 @@ class PhysicsSetup:
         return {str(param.get("id", "")) for param in rigging.get("parameters", [])}
 
     def _filter_known_ids(self, parameter_ids: set[str], candidates: JsonList) -> JsonList:
-        return [candidate for candidate in candidates if str(candidate.get("id", "")) in parameter_ids]
+        return [
+            candidate for candidate in candidates if str(candidate.get("id", "")) in parameter_ids
+        ]
 
     async def configure(self, rigging: JsonDict, segments: JsonDict) -> JsonDict:
         del segments
