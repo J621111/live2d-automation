@@ -4,7 +4,7 @@ Live2D 骨骼管理和动画
 """
 
 import numpy as np
-from typing import Dict, List, Any, Optional
+from typing import Any, Dict, List, Optional, cast
 from dataclasses import dataclass, field
 from loguru import logger
 
@@ -154,7 +154,7 @@ class BoneSystem:
         cos_r = np.cos(angle_rad)
         sin_r = np.sin(angle_rad)
 
-        matrix = np.array(
+        matrix = cast(np.ndarray, np.array(
             [
                 [
                     cos_r * bone.world_scale["x"],
@@ -168,7 +168,7 @@ class BoneSystem:
                 ],
                 [0, 0, 1],
             ]
-        )
+        ))
 
         return matrix
 
@@ -190,7 +190,7 @@ class BoneSystem:
         point = np.array([local_point["x"], local_point["y"], 1])
         transformed = matrix @ point
 
-        return {"x": transformed[0], "y": transformed[1]}
+        return {"x": cast(float, transformed[0]), "y": cast(float, transformed[1])}
 
     def inverse_transform_point(
         self, bone_id: str, world_point: Dict[str, float]
@@ -211,7 +211,7 @@ class BoneSystem:
         point = np.array([world_point["x"], world_point["y"], 1])
         transformed = inv_matrix @ point
 
-        return {"x": transformed[0], "y": transformed[1]}
+        return {"x": cast(float, transformed[0]), "y": cast(float, transformed[1])}
 
     def look_at(
         self, bone_id: str, target: Dict[str, float], up_vector: Optional[Dict] = None

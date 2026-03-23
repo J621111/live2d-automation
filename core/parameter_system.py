@@ -4,7 +4,7 @@ Live2D 参数管理和插值
 """
 
 import numpy as np
-from typing import Dict, List, Any, Optional
+from typing import Any, Dict, List, Optional, cast
 from dataclasses import dataclass
 from loguru import logger
 
@@ -125,7 +125,8 @@ class ParameterSystem:
             elif t == 1:
                 return 1
             else:
-                return -(2 ** (10 * t - 10)) * np.sin((t * 10 - 10.75) * c4)
+                value = -(2 ** (10 * t - 10)) * np.sin((t * 10 - 10.75) * c4)
+                return cast(float, value)
         else:
             return t
 
