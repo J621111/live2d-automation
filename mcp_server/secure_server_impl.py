@@ -1,14 +1,21 @@
-"""
-Hardened Live2D Automation MCP server implementation.
-"""
+﻿"""Hardened Live2D Automation MCP server implementation."""
+
+from __future__ import annotations
 
 import json
+import os
 import re
 import sys
+import time
 import uuid
+from contextlib import contextmanager
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from threading import RLock
+from typing import Any
 
+from PIL import Image as PILImage
+from PIL import ImageFile, UnidentifiedImageError
 from fastmcp import FastMCP
 from loguru import logger
 
@@ -29,19 +36,61 @@ mcp = FastMCP("live2d-automation")
 
 OUTPUT_ROOT = (project_root / "output").resolve()
 MAX_IMAGE_BYTES = 20 * 1024 * 1024
-MAX_SESSIONS = 32
+MAX_IMAGE_WIDTH = 4096
+MAX_IMAGE_HEIGHT = 4096
+MAX_IMAGE_PIXELS = 16_777_216
 ALLOWED_IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".webp"}
 SESSION_ID_RE = re.compile(r"^[A-Za-z0-9_-]{8,64}$")
 MODEL_NAME_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
+DEFAULT_MOTION_TYPES = ["idle", "tap", "move", "emotional"]
+ALLOWED_MOTION_TYPES = tuple(DEFAULT_MOTION_TYPES)
+MAX_MOTION_TYPES = len(DEFAULT_MOTION_TYPES)
 
-session_store: Dict[str, Dict[str, Any]] = {}
+PILImage.MAX_IMAGE_PIXELS = MAX_IMAGE_PIXELS
+ImageFile.LOAD_TRUNCATED_IMAGES = False
+
+
+def _env_int(name: str, default: int, minimum: int = 1) -> int:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    try:
+        return max(minimum, int(raw))
+    except ValueError:
+        logger.warning(f"Invalid integer for {name}: {raw!r}; using default {default}")
+        return default
+
+
+MAX_SESSIONS = _env_int("LIVE2D_MAX_SESSIONS", 32)
+SESSION_TTL_SECONDS = _env_int("LIVE2D_SESSION_TTL_SECONDS", 60 * 60)
+MAX_CONCURRENT_OPERATIONS = _env_int("LIVE2D_MAX_CONCURRENT_OPERATIONS", 4)
 
 
 class InputValidationError(ValueError):
     """Raised when a user-controlled input is unsafe or invalid."""
 
 
-def _empty_state() -> Dict[str, Any]:
+@dataclass
+class SessionMetrics:
+    created_sessions: int = 0
+    rejected_sessions: int = 0
+    expired_sessions: int = 0
+    closed_sessions: int = 0
+    completed_sessions: int = 0
+
+
+@dataclass
+class SessionRecord:
+    """In-memory state for a single MCP session."""
+
+    session_id: str
+    state: dict[str, Any] = field(default_factory=lambda: _empty_state())
+    created_at: float = field(default_factory=time.time)
+    last_accessed: float = field(default_factory=time.time)
+    active_operation: bool = False
+
+
+def _empty_state() -> dict[str, Any]:
     return {
         "input_image": None,
         "output_dir": None,
@@ -54,7 +103,15 @@ def _empty_state() -> Dict[str, Any]:
         "physics": {},
         "motions": [],
         "model_files": {},
+        "face_output_dir": None,
+        "analysis_metadata": {},
+        "layer_generation_metadata": {},
     }
+
+
+session_store: dict[str, SessionRecord] = {}
+session_lock = RLock()
+session_metrics = SessionMetrics()
 
 
 def _is_relative_to(path: Path, root: Path) -> bool:
@@ -69,58 +126,157 @@ def _new_session_id() -> str:
     return f"job_{uuid.uuid4().hex[:12]}"
 
 
-def _prune_sessions() -> None:
-    while len(session_store) >= MAX_SESSIONS:
-        oldest_session_id = next(iter(session_store))
-        session_store.pop(oldest_session_id, None)
-
-
-def _ensure_session(session_id: Optional[str] = None, reset: bool = False) -> str:
-    if session_id is None:
-        session_id = _new_session_id()
+def _validate_session_id(session_id: str) -> str:
     if not SESSION_ID_RE.match(session_id):
         raise InputValidationError("session_id contains unsupported characters.")
-    if reset or session_id not in session_store:
-        if session_id not in session_store:
-            _prune_sessions()
-        session_store[session_id] = _empty_state()
     return session_id
 
 
-def _get_session_state(session_id: str) -> Dict[str, Any]:
-    if session_id not in session_store:
-        raise InputValidationError("Unknown session_id. Run analyze_photo first.")
-    return session_store[session_id]
+def _prune_expired_sessions_locked(now: float | None = None) -> None:
+    current_time = now or time.time()
+    expired = [
+        session_id
+        for session_id, record in session_store.items()
+        if current_time - record.last_accessed > SESSION_TTL_SECONDS
+    ]
+    for session_id in expired:
+        session_store.pop(session_id, None)
+        session_metrics.expired_sessions += 1
 
 
-def _require_state_field(session_id: str, field: str, message: str) -> Dict[str, Any]:
+def _create_session() -> str:
+    with session_lock:
+        _prune_expired_sessions_locked()
+        if len(session_store) >= MAX_SESSIONS:
+            session_metrics.rejected_sessions += 1
+            raise InputValidationError(
+                "Too many active sessions. Wait for an existing job to expire or finish."
+            )
+        session_id = _new_session_id()
+        session_store[session_id] = SessionRecord(session_id=session_id)
+        session_metrics.created_sessions += 1
+        return session_id
+
+
+def _remove_session(session_id: str, *, reason: str = "manual") -> bool:
+    with session_lock:
+        record = session_store.pop(session_id, None)
+        if record is None:
+            return False
+        if reason == "manual":
+            session_metrics.closed_sessions += 1
+        elif reason == "completed":
+            session_metrics.completed_sessions += 1
+        elif reason == "expired":
+            session_metrics.expired_sessions += 1
+        return True
+
+
+def _get_session_record(session_id: str, *, touch: bool = True) -> SessionRecord:
+    _validate_session_id(session_id)
+    with session_lock:
+        _prune_expired_sessions_locked()
+        record = session_store.get(session_id)
+        if record is None:
+            raise InputValidationError("Unknown or expired session_id. Run analyze_photo first.")
+        if touch:
+            record.last_accessed = time.time()
+        return record
+
+
+def _get_session_state(session_id: str) -> dict[str, Any]:
+    return _get_session_record(session_id).state
+
+
+def _require_state_field(session_id: str, field: str, message: str) -> dict[str, Any]:
     state = _get_session_state(session_id)
     if not state.get(field):
         raise InputValidationError(message)
     return state
 
 
+def _active_operation_count() -> int:
+    return sum(1 for record in session_store.values() if record.active_operation)
+
+
+@contextmanager
+def _session_operation(session_id: str):
+    with session_lock:
+        _prune_expired_sessions_locked()
+        record = _get_session_record(session_id, touch=False)
+        if record.active_operation:
+            session_metrics.rejected_sessions += 1
+            raise InputValidationError("This session is already busy running another operation.")
+        if _active_operation_count() >= MAX_CONCURRENT_OPERATIONS:
+            session_metrics.rejected_sessions += 1
+            raise InputValidationError("Server is busy. Retry after another job completes.")
+        record.active_operation = True
+        record.last_accessed = time.time()
+
+    try:
+        yield record
+    finally:
+        with session_lock:
+            existing = session_store.get(session_id)
+            if existing is not None:
+                existing.active_operation = False
+                existing.last_accessed = time.time()
+
+
+def _partial_outputs(session_id: str | None) -> dict[str, Any]:
+    if not session_id:
+        return {}
+    try:
+        state = _get_session_state(session_id)
+    except InputValidationError:
+        return {}
+    return {
+        "output_dir": state.get("output_dir"),
+        "layers_generated": len(state.get("layers", [])),
+        "meshes_created": len(state.get("meshes", {})),
+        "motions_generated": len(state.get("motions", [])),
+        "model_files": state.get("model_files", {}),
+    }
+
+
+def _build_error_payload(*, error_code: str, message: str, session_id: str | None = None, validation_errors: list[str] | None = None, partial_outputs: dict[str, Any] | None = None) -> dict[str, Any]:
+    payload: dict[str, Any] = {"status": "error", "error_code": error_code, "message": message}
+    if session_id:
+        payload["session_id"] = session_id
+    if validation_errors:
+        payload["validation_errors"] = validation_errors
+    if partial_outputs:
+        payload["partial_outputs"] = partial_outputs
+    return payload
+
 def _resolve_image_path(image_path: str) -> Path:
     if not image_path or not image_path.strip():
         raise InputValidationError("image_path is required.")
-
     raw_path = Path(image_path)
     resolved = raw_path.resolve() if raw_path.is_absolute() else (project_root / raw_path).resolve()
-
     if not resolved.exists() or not resolved.is_file():
         raise InputValidationError("image_path does not point to an existing file.")
     if resolved.suffix.lower() not in ALLOWED_IMAGE_SUFFIXES:
         raise InputValidationError("Unsupported image format.")
     if resolved.stat().st_size > MAX_IMAGE_BYTES:
         raise InputValidationError("Image file is too large.")
-
+    try:
+        with PILImage.open(resolved) as image:
+            width, height = image.size
+    except (PILImage.DecompressionBombError, OSError, UnidentifiedImageError) as exc:
+        raise InputValidationError(f"Unable to safely open image: {exc}") from exc
+    if width <= 0 or height <= 0:
+        raise InputValidationError("Image dimensions are invalid.")
+    if width > MAX_IMAGE_WIDTH or height > MAX_IMAGE_HEIGHT:
+        raise InputValidationError(f"Image dimensions exceed the {MAX_IMAGE_WIDTH}x{MAX_IMAGE_HEIGHT} limit.")
+    if width * height > MAX_IMAGE_PIXELS:
+        raise InputValidationError("Image contains too many pixels.")
     return resolved
 
 
 def _resolve_output_dir(output_dir: str) -> Path:
     if not output_dir or not output_dir.strip():
         raise InputValidationError("output_dir is required.")
-
     raw_path = Path(output_dir)
     if raw_path.is_absolute():
         resolved = raw_path.resolve()
@@ -128,106 +284,142 @@ def _resolve_output_dir(output_dir: str) -> Path:
         resolved = (project_root / raw_path).resolve()
     else:
         resolved = (OUTPUT_ROOT / raw_path).resolve()
-
     if not _is_relative_to(resolved, OUTPUT_ROOT):
         raise InputValidationError("output_dir must stay inside the project output directory.")
-
     return resolved
 
 
 def _validate_model_name(model_name: str) -> str:
     if not MODEL_NAME_RE.match(model_name):
-        raise InputValidationError(
-            "model_name may only contain letters, numbers, underscores, and hyphens."
-        )
+        raise InputValidationError("model_name may only contain letters, numbers, underscores, and hyphens.")
     return model_name
 
 
-def _status_summary(session_id: str, state: Dict[str, Any]) -> Dict[str, Any]:
+def _validate_motion_types(motion_types: list[str] | None) -> list[str]:
+    normalized = motion_types or DEFAULT_MOTION_TYPES
+    if not isinstance(normalized, list):
+        raise InputValidationError("motion_types must be an array of supported motion names.")
+    if not normalized:
+        raise InputValidationError("motion_types must contain at least one motion type.")
+    if len(normalized) > MAX_MOTION_TYPES:
+        raise InputValidationError(f"At most {MAX_MOTION_TYPES} motion types may be requested at once.")
+    safe_motion_types: list[str] = []
+    for motion_type in normalized:
+        if not isinstance(motion_type, str):
+            raise InputValidationError("motion_types entries must be strings.")
+        normalized_type = motion_type.strip().lower()
+        if normalized_type not in ALLOWED_MOTION_TYPES:
+            allowed = ", ".join(ALLOWED_MOTION_TYPES)
+            raise InputValidationError(f"Unsupported motion_type '{motion_type}'. Allowed values: {allowed}.")
+        if normalized_type not in safe_motion_types:
+            safe_motion_types.append(normalized_type)
+    return safe_motion_types
+
+
+def _status_summary(record: SessionRecord) -> dict[str, Any]:
+    state = record.state
     return {
-        "session_id": session_id,
         "has_image": bool(state.get("input_image")),
         "segments_ready": bool(state.get("segments")),
         "layers_ready": len(state.get("layers", [])),
         "meshes_ready": len(state.get("meshes", {})),
         "motions_ready": len(state.get("motions", [])),
         "has_export": bool(state.get("model_files")),
+        "busy": record.active_operation,
     }
 
 
-async def _analyze_photo_impl(image_path: Path, session_id: str) -> Dict[str, Any]:
+def _append_step(results: dict[str, Any], name: str, result: dict[str, Any]) -> None:
+    results.setdefault("steps", []).append({"name": name, "result": result})
+    results["partial_outputs"] = _partial_outputs(results.get("session_id"))
+
+
+async def _analyze_photo_impl(image_path: Path, session_id: str) -> dict[str, Any]:
     logger.info(f"Analyzing photo for session {session_id}: {image_path.name}")
     processor = ImageProcessor()
     segments = await processor.analyze(str(image_path))
-
     state = _get_session_state(session_id)
     state.clear()
     state.update(_empty_state())
     state["input_image"] = str(image_path)
     state["segments"] = segments
-
+    state["analysis_metadata"] = {
+        "detector_used": segments.get("detector_used"),
+        "fallback_reason": segments.get("fallback_reason"),
+        "confidence_summary": segments.get("confidence_summary"),
+    }
+    detected_parts = segments.get("parts") or {}
     return {
         "status": "success",
         "session_id": session_id,
-        "parts_detected": len(segments.get("body_parts", {})),
+        "parts_detected": len(detected_parts),
         "segments": segments,
-        "message": f"Detected {len(segments.get('body_parts', {}))} body parts.",
+        "detector_used": segments.get("detector_used"),
+        "fallback_reason": segments.get("fallback_reason"),
+        "confidence_summary": segments.get("confidence_summary"),
+        "message": f"Detected {len(detected_parts)} candidate parts.",
     }
 
 
-async def _detect_face_features_impl(session_id: str, output_dir: Path) -> Dict[str, Any]:
+async def _ensure_face_features_impl(session_id: str, output_dir: Path) -> tuple[dict[str, Any], list[dict[str, Any]], bool]:
     state = _require_state_field(session_id, "input_image", "Run analyze_photo before face extraction.")
+    face_output_dir = output_dir / "face_textures"
+    face_output_dir_str = str(face_output_dir)
+    if state.get("face_features") and state.get("face_layers") and state.get("face_output_dir") == face_output_dir_str:
+        return state["face_features"], state["face_layers"], False
     logger.info(f"Detecting face features for session {session_id}")
-
     detector = FacialFeatureDetector()
     face_features = await detector.detect_features(state["input_image"])
-    face_output_dir = output_dir / "face_textures"
     face_output_dir.mkdir(parents=True, exist_ok=True)
-    face_layers = await detector.extract_face_parts(state["input_image"], str(face_output_dir))
-
+    face_layers = await detector.extract_face_parts(state["input_image"], str(face_output_dir), features=face_features)
     state["face_features"] = face_features
     state["face_layers"] = face_layers
+    state["face_output_dir"] = face_output_dir_str
+    return face_features, face_layers, True
 
+
+async def _detect_face_features_impl(session_id: str, output_dir: Path) -> dict[str, Any]:
+    face_features, face_layers, _ = await _ensure_face_features_impl(session_id, output_dir)
     return {
         "status": "success",
         "session_id": session_id,
         "parts_detected": len(face_features.get("parts", {})),
         "layers_extracted": len(face_layers),
+        "detector_used": face_features.get("detector_used"),
+        "fallback_reason": face_features.get("fallback_reason"),
+        "confidence_summary": face_features.get("confidence_summary"),
         "message": f"Detected {len(face_features.get('parts', {}))} face parts.",
     }
 
 
-async def _generate_layers_impl(session_id: str, output_dir: Path) -> Dict[str, Any]:
+async def _generate_layers_impl(session_id: str, output_dir: Path) -> dict[str, Any]:
     state = _require_state_field(session_id, "segments", "Run analyze_photo before generate_layers.")
     logger.info(f"Generating layers for session {session_id}")
-
-    generator = LayerGenerator()
-    layers = await generator.generate(
-        image_path=state["input_image"],
-        segments=state["segments"],
-        output_dir=str(output_dir),
-    )
-
     state["output_dir"] = str(output_dir)
+    face_features, face_layers, _ = await _ensure_face_features_impl(session_id, output_dir)
+    generator = LayerGenerator()
+    layers = await generator.generate(image_path=state["input_image"], segments=state["segments"], output_dir=str(output_dir))
     state["layers"] = layers
-
+    state["layer_generation_metadata"] = generator.last_generation_metadata
     return {
         "status": "success",
         "session_id": session_id,
         "layers_generated": len(layers),
         "layers": layers,
+        "face_layers_extracted": len(face_layers),
+        "detector_used": generator.last_generation_metadata.get("detector_used"),
+        "fallback_reason": generator.last_generation_metadata.get("fallback_reason"),
+        "confidence_summary": generator.last_generation_metadata.get("confidence_summary"),
+        "face_detector_used": face_features.get("detector_used"),
         "message": f"Generated {len(layers)} layers.",
     }
 
-
-async def _create_mesh_impl(session_id: str) -> Dict[str, Any]:
+async def _create_mesh_impl(session_id: str) -> dict[str, Any]:
     state = _require_state_field(session_id, "layers", "Run generate_layers before create_mesh.")
     logger.info(f"Creating meshes for session {session_id}")
-
     mesh_gen = ArtMeshGenerator()
     meshes = await mesh_gen.generate_from_layers(state["layers"])
     state["meshes"] = meshes
-
     return {
         "status": "success",
         "session_id": session_id,
@@ -237,37 +429,28 @@ async def _create_mesh_impl(session_id: str) -> Dict[str, Any]:
     }
 
 
-async def _setup_rigging_impl(session_id: str) -> Dict[str, Any]:
+async def _setup_rigging_impl(session_id: str) -> dict[str, Any]:
     state = _require_state_field(session_id, "meshes", "Run create_mesh before setup_rigging.")
     logger.info(f"Setting up rigging for session {session_id}")
-
     rigger = AutoRigger()
     rigging = await rigger.setup(meshes=state["meshes"], segments=state["segments"])
     state["rigging"] = rigging
-
     return {
         "status": "success",
         "session_id": session_id,
         "bones_created": len(rigging.get("bones", [])),
         "parameters_created": len(rigging.get("parameters", [])),
         "rigging": rigging,
-        "message": (
-            f"Created {len(rigging.get('bones', []))} bones and "
-            f"{len(rigging.get('parameters', []))} parameters."
-        ),
+        "message": f"Created {len(rigging.get('bones', []))} bones and {len(rigging.get('parameters', []))} parameters.",
     }
 
 
-async def _configure_physics_impl(session_id: str) -> Dict[str, Any]:
-    state = _require_state_field(
-        session_id, "rigging", "Run setup_rigging before configure_physics."
-    )
+async def _configure_physics_impl(session_id: str) -> dict[str, Any]:
+    state = _require_state_field(session_id, "rigging", "Run setup_rigging before configure_physics.")
     logger.info(f"Configuring physics for session {session_id}")
-
     physics = PhysicsSetup()
     config = await physics.configure(rigging=state["rigging"], segments=state["segments"])
     state["physics"] = config
-
     return {
         "status": "success",
         "session_id": session_id,
@@ -277,14 +460,12 @@ async def _configure_physics_impl(session_id: str) -> Dict[str, Any]:
     }
 
 
-async def _generate_motions_impl(session_id: str, motion_types: List[str]) -> Dict[str, Any]:
+async def _generate_motions_impl(session_id: str, motion_types: list[str]) -> dict[str, Any]:
     state = _require_state_field(session_id, "rigging", "Run setup_rigging before generate_motions.")
     logger.info(f"Generating motions for session {session_id}: {motion_types}")
-
     motion_gen = MotionGenerator()
     motions = await motion_gen.generate(rigging=state["rigging"], motion_types=motion_types)
     state["motions"] = motions
-
     return {
         "status": "success",
         "session_id": session_id,
@@ -294,122 +475,214 @@ async def _generate_motions_impl(session_id: str, motion_types: List[str]) -> Di
     }
 
 
-@mcp.tool()
-async def analyze_photo(image_path: str, session_id: Optional[str] = None) -> Dict[str, Any]:
-    session_id = _ensure_session(session_id, reset=True)
-    resolved_image = _resolve_image_path(image_path)
-    return await _analyze_photo_impl(resolved_image, session_id)
+async def _export_model_impl(session_id: str, output_dir: Path, model_name: str) -> dict[str, Any]:
+    state = _get_session_state(session_id)
+    state["output_dir"] = str(output_dir)
+    exporter = Moc3Exporter()
+    export_result = await exporter.export(model_name=model_name, output_dir=str(output_dir), state=state)
+    state["model_files"] = export_result.get("files", {})
+    return {
+        "status": export_result.get("status", "error"),
+        "session_id": session_id,
+        "model_files": export_result.get("files", {}),
+        "export_result": export_result,
+        "message": export_result.get("warnings", ["Export complete."])[0],
+    }
 
 
 @mcp.tool()
-async def generate_layers(session_id: str, output_dir: str) -> Dict[str, Any]:
-    resolved_output_dir = _resolve_output_dir(output_dir)
-    return await _generate_layers_impl(session_id, resolved_output_dir)
+async def analyze_photo(image_path: str) -> dict[str, Any]:
+    session_id = _create_session()
+    try:
+        resolved_image = _resolve_image_path(image_path)
+        with _session_operation(session_id):
+            return await _analyze_photo_impl(resolved_image, session_id)
+    except InputValidationError as exc:
+        _remove_session(session_id, reason="completed")
+        logger.warning(f"Validation error in session {session_id}: {exc}")
+        return _build_error_payload(error_code="invalid_input", message=str(exc), session_id=session_id, validation_errors=[str(exc)])
+    except Exception:
+        _remove_session(session_id, reason="completed")
+        logger.exception(f"Photo analysis failed for session {session_id}")
+        return _build_error_payload(error_code="analysis_failed", message="Photo analysis failed. Check server logs for details.", session_id=session_id)
 
 
 @mcp.tool()
-async def create_mesh(session_id: str) -> Dict[str, Any]:
-    return await _create_mesh_impl(session_id)
+async def detect_face_features(session_id: str, output_dir: str) -> dict[str, Any]:
+    try:
+        resolved_output_dir = _resolve_output_dir(output_dir)
+        with _session_operation(session_id):
+            return await _detect_face_features_impl(session_id, resolved_output_dir)
+    except InputValidationError as exc:
+        logger.warning(f"Validation error in detect_face_features for {session_id}: {exc}")
+        return _build_error_payload(error_code="invalid_input", message=str(exc), session_id=session_id, validation_errors=[str(exc)], partial_outputs=_partial_outputs(session_id))
+    except Exception:
+        logger.exception(f"Face feature detection failed for session {session_id}")
+        return _build_error_payload(error_code="face_detection_failed", message="Face feature detection failed. Check server logs for details.", session_id=session_id, partial_outputs=_partial_outputs(session_id))
 
 
 @mcp.tool()
-async def setup_rigging(session_id: str) -> Dict[str, Any]:
-    return await _setup_rigging_impl(session_id)
+async def generate_layers(session_id: str, output_dir: str) -> dict[str, Any]:
+    try:
+        resolved_output_dir = _resolve_output_dir(output_dir)
+        with _session_operation(session_id):
+            return await _generate_layers_impl(session_id, resolved_output_dir)
+    except InputValidationError as exc:
+        logger.warning(f"Validation error in generate_layers for {session_id}: {exc}")
+        return _build_error_payload(error_code="invalid_input", message=str(exc), session_id=session_id, validation_errors=[str(exc)], partial_outputs=_partial_outputs(session_id))
+    except Exception:
+        logger.exception(f"Layer generation failed for session {session_id}")
+        return _build_error_payload(error_code="layer_generation_failed", message="Layer generation failed. Check server logs for details.", session_id=session_id, partial_outputs=_partial_outputs(session_id))
 
 
 @mcp.tool()
-async def configure_physics(session_id: str) -> Dict[str, Any]:
-    return await _configure_physics_impl(session_id)
+async def create_mesh(session_id: str) -> dict[str, Any]:
+    try:
+        with _session_operation(session_id):
+            return await _create_mesh_impl(session_id)
+    except InputValidationError as exc:
+        logger.warning(f"Validation error in create_mesh for {session_id}: {exc}")
+        return _build_error_payload(error_code="invalid_input", message=str(exc), session_id=session_id, validation_errors=[str(exc)], partial_outputs=_partial_outputs(session_id))
+    except Exception:
+        logger.exception(f"Mesh generation failed for session {session_id}")
+        return _build_error_payload(error_code="mesh_generation_failed", message="Mesh generation failed. Check server logs for details.", session_id=session_id, partial_outputs=_partial_outputs(session_id))
+
+@mcp.tool()
+async def setup_rigging(session_id: str) -> dict[str, Any]:
+    try:
+        with _session_operation(session_id):
+            return await _setup_rigging_impl(session_id)
+    except InputValidationError as exc:
+        logger.warning(f"Validation error in setup_rigging for {session_id}: {exc}")
+        return _build_error_payload(error_code="invalid_input", message=str(exc), session_id=session_id, validation_errors=[str(exc)], partial_outputs=_partial_outputs(session_id))
+    except Exception:
+        logger.exception(f"Rigging failed for session {session_id}")
+        return _build_error_payload(error_code="rigging_failed", message="Rigging failed. Check server logs for details.", session_id=session_id, partial_outputs=_partial_outputs(session_id))
 
 
 @mcp.tool()
-async def generate_motions(session_id: str, motion_types: List[str]) -> Dict[str, Any]:
-    return await _generate_motions_impl(session_id, motion_types)
+async def configure_physics(session_id: str) -> dict[str, Any]:
+    try:
+        with _session_operation(session_id):
+            return await _configure_physics_impl(session_id)
+    except InputValidationError as exc:
+        logger.warning(f"Validation error in configure_physics for {session_id}: {exc}")
+        return _build_error_payload(error_code="invalid_input", message=str(exc), session_id=session_id, validation_errors=[str(exc)], partial_outputs=_partial_outputs(session_id))
+    except Exception:
+        logger.exception(f"Physics configuration failed for session {session_id}")
+        return _build_error_payload(error_code="physics_configuration_failed", message="Physics configuration failed. Check server logs for details.", session_id=session_id, partial_outputs=_partial_outputs(session_id))
 
 
 @mcp.tool()
-async def full_pipeline(
-    image_path: str,
-    output_dir: str,
-    model_name: str = "ATRI",
-    motion_types: Optional[List[str]] = None,
-    session_id: Optional[str] = None,
-) -> Dict[str, Any]:
-    if motion_types is None:
-        motion_types = ["idle", "tap", "move", "emotional"]
+async def generate_motions(session_id: str, motion_types: list[str]) -> dict[str, Any]:
+    try:
+        safe_motion_types = _validate_motion_types(motion_types)
+        with _session_operation(session_id):
+            return await _generate_motions_impl(session_id, safe_motion_types)
+    except InputValidationError as exc:
+        logger.warning(f"Validation error in generate_motions for {session_id}: {exc}")
+        return _build_error_payload(error_code="invalid_input", message=str(exc), session_id=session_id, validation_errors=[str(exc)], partial_outputs=_partial_outputs(session_id))
+    except Exception:
+        logger.exception(f"Motion generation failed for session {session_id}")
+        return _build_error_payload(error_code="motion_generation_failed", message="Motion generation failed. Check server logs for details.", session_id=session_id, partial_outputs=_partial_outputs(session_id))
 
-    session_id = _ensure_session(session_id, reset=True)
-    results: Dict[str, Any] = {"model_name": model_name, "session_id": session_id, "steps": []}
 
+@mcp.tool()
+async def export_model(session_id: str, output_dir: str, model_name: str = "ATRI") -> dict[str, Any]:
+    try:
+        resolved_output_dir = _resolve_output_dir(output_dir)
+        safe_model_name = _validate_model_name(model_name)
+        with _session_operation(session_id):
+            return await _export_model_impl(session_id, resolved_output_dir, safe_model_name)
+    except InputValidationError as exc:
+        logger.warning(f"Validation error in export_model for {session_id}: {exc}")
+        return _build_error_payload(error_code="invalid_input", message=str(exc), session_id=session_id, validation_errors=[str(exc)], partial_outputs=_partial_outputs(session_id))
+    except Exception:
+        logger.exception(f"Export failed for session {session_id}")
+        return _build_error_payload(error_code="export_failed", message="Export failed. Check server logs for details.", session_id=session_id, partial_outputs=_partial_outputs(session_id))
+
+
+@mcp.tool()
+async def close_session(session_id: str) -> dict[str, Any]:
+    try:
+        _validate_session_id(session_id)
+        partial_outputs = _partial_outputs(session_id)
+        if not _remove_session(session_id, reason="manual"):
+            raise InputValidationError("Unknown or expired session_id. Nothing to close.")
+        return {"status": "success", "session_id": session_id, "partial_outputs": partial_outputs, "message": "Session closed."}
+    except InputValidationError as exc:
+        return _build_error_payload(error_code="invalid_input", message=str(exc), session_id=session_id, validation_errors=[str(exc)])
+
+
+@mcp.tool()
+async def full_pipeline(image_path: str, output_dir: str, model_name: str = "ATRI", motion_types: list[str] | None = None) -> dict[str, Any]:
+    session_id = _create_session()
+    results: dict[str, Any] = {"model_name": model_name, "session_id": session_id, "steps": [], "partial_outputs": {}}
     try:
         resolved_image = _resolve_image_path(image_path)
         resolved_output_dir = _resolve_output_dir(output_dir)
         safe_model_name = _validate_model_name(model_name)
-
-        step1 = await _analyze_photo_impl(resolved_image, session_id)
-        results["steps"].append({"name": "analyze_photo", "result": step1})
-
-        step15 = await _detect_face_features_impl(session_id, resolved_output_dir)
-        results["steps"].append({"name": "detect_face_features", "result": step15})
-
-        step2 = await _generate_layers_impl(session_id, resolved_output_dir)
-        results["steps"].append({"name": "generate_layers", "result": step2})
-
-        step3 = await _create_mesh_impl(session_id)
-        results["steps"].append({"name": "create_mesh", "result": step3})
-
-        step4 = await _setup_rigging_impl(session_id)
-        results["steps"].append({"name": "setup_rigging", "result": step4})
-
-        step5 = await _configure_physics_impl(session_id)
-        results["steps"].append({"name": "configure_physics", "result": step5})
-
-        step6 = await _generate_motions_impl(session_id, motion_types)
-        results["steps"].append({"name": "generate_motions", "result": step6})
-
-        exporter = Moc3Exporter()
-        state = _get_session_state(session_id)
-        export_result = await exporter.export(
-            model_name=safe_model_name,
-            output_dir=str(resolved_output_dir),
-            state=state,
-        )
-        state["model_files"] = export_result.get("files", {})
-
-        results["model_files"] = export_result.get("files", {})
-        results["export_result"] = export_result
-        results["steps"].append({"name": "export_model", "result": export_result})
-
-        if export_result.get("status") != "success":
-            results["status"] = "error"
-            results["error"] = "export_failed"
-            results["message"] = "Model export failed before all required files were created."
-        else:
-            results["status"] = "success"
-            results["message"] = f"Live2D model '{safe_model_name}' generated successfully."
-            results["output_path"] = str(resolved_output_dir)
-
+        safe_motion_types = _validate_motion_types(motion_types)
+        with _session_operation(session_id):
+            step1 = await _analyze_photo_impl(resolved_image, session_id)
+            _append_step(results, "analyze_photo", step1)
+            step15 = await _detect_face_features_impl(session_id, resolved_output_dir)
+            _append_step(results, "detect_face_features", step15)
+            step2 = await _generate_layers_impl(session_id, resolved_output_dir)
+            _append_step(results, "generate_layers", step2)
+            step3 = await _create_mesh_impl(session_id)
+            _append_step(results, "create_mesh", step3)
+            step4 = await _setup_rigging_impl(session_id)
+            _append_step(results, "setup_rigging", step4)
+            step5 = await _configure_physics_impl(session_id)
+            _append_step(results, "configure_physics", step5)
+            step6 = await _generate_motions_impl(session_id, safe_motion_types)
+            _append_step(results, "generate_motions", step6)
+            export_result = await _export_model_impl(session_id, resolved_output_dir, safe_model_name)
+            results["model_files"] = export_result.get("model_files", {})
+            results["export_result"] = export_result.get("export_result", {})
+            _append_step(results, "export_model", export_result)
+        if results["export_result"].get("status") != "success":
+            results.update(_build_error_payload(error_code="export_failed", message="Model export failed contract validation.", session_id=session_id, partial_outputs=_partial_outputs(session_id)))
+            return results
+        results["status"] = "success"
+        results["output_path"] = str(resolved_output_dir)
+        results["motion_types"] = safe_motion_types
+        results["message"] = f"Mock intermediate Live2D package '{safe_model_name}' generated successfully. Finalize the exported bundle in Cubism Editor before production use."
+        return results
     except InputValidationError as exc:
         logger.warning(f"Validation error in session {session_id}: {exc}")
-        results["status"] = "error"
-        results["error"] = "invalid_input"
-        results["message"] = str(exc)
+        results.update(_build_error_payload(error_code="invalid_input", message=str(exc), session_id=session_id, validation_errors=[str(exc)], partial_outputs=_partial_outputs(session_id)))
     except Exception:
         logger.exception(f"Pipeline execution failed for session {session_id}")
-        results["status"] = "error"
-        results["error"] = "pipeline_failed"
-        results["message"] = "Pipeline execution failed. Check server logs for details."
-
+        results.update(_build_error_payload(error_code="pipeline_failed", message="Pipeline execution failed. Check server logs for details.", session_id=session_id, partial_outputs=_partial_outputs(session_id)))
+    finally:
+        _remove_session(session_id, reason="completed")
     return results
-
 
 @mcp.resource("live2d://status")
 def get_status() -> str:
-    summaries = [
-        _status_summary(session_id, state)
-        for session_id, state in session_store.items()
-    ]
-    return json.dumps({"active_sessions": len(summaries), "sessions": summaries[-10:]}, indent=2)
+    with session_lock:
+        _prune_expired_sessions_locked()
+        summaries = [_status_summary(record) for record in session_store.values()]
+    return json.dumps(
+        {
+            "active_sessions": len(summaries),
+            "busy_sessions": sum(1 for summary in summaries if summary["busy"]),
+            "max_sessions": MAX_SESSIONS,
+            "max_concurrent_operations": MAX_CONCURRENT_OPERATIONS,
+            "session_ttl_seconds": SESSION_TTL_SECONDS,
+            "session_ids_hidden": True,
+            "metrics": {
+                "created_sessions": session_metrics.created_sessions,
+                "rejected_sessions": session_metrics.rejected_sessions,
+                "expired_sessions": session_metrics.expired_sessions,
+                "closed_sessions": session_metrics.closed_sessions,
+                "completed_sessions": session_metrics.completed_sessions,
+            },
+        },
+        indent=2,
+    )
 
 
 @mcp.resource("live2d://templates")
@@ -439,20 +712,29 @@ Use `full_pipeline` for one-shot generation:
 ```
 
 ## Step-by-Step
-1. `analyze_photo` to start a session and get a `session_id`
-2. `generate_layers(session_id, output_dir)`
-3. `create_mesh(session_id)`
-4. `setup_rigging(session_id)`
-5. `configure_physics(session_id)`
-6. `generate_motions(session_id, motion_types)`
+1. `analyze_photo(image_path)` to start a new session and receive a server-issued `session_id`
+2. `detect_face_features(session_id, output_dir)`
+3. `generate_layers(session_id, output_dir)`
+4. `create_mesh(session_id)`
+5. `setup_rigging(session_id)`
+6. `configure_physics(session_id)`
+7. `generate_motions(session_id, motion_types)`
+8. `export_model(session_id, output_dir, model_name)`
+9. `close_session(session_id)` when the step flow is complete
 
 ## Safety Rules
 - `output_dir` must stay inside the project `output/` directory
 - `model_name` only supports letters, numbers, `_`, and `-`
 - supported image types: png, jpg, jpeg, webp
+- maximum image size: 20 MiB, 4096x4096 pixels, 16,777,216 total pixels
+- supported motion types: idle, tap, move, emotional
+
+## Export Contract
+- the exporter produces a mock intermediate `.moc3` package for Cubism Editor finalization
+- `model3.json` and the exported file list always reference `{model_name}.moc3`
+- `full_pipeline` closes its session automatically, while step-by-step flows should call `close_session`
 """
 
 
 def main() -> None:
     mcp.run()
-

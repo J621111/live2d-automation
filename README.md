@@ -1,72 +1,88 @@
-# Live2D Automation MCP Server
+﻿# Live2D Automation MCP Server
 
-从单张照片自动生成完整的 Live2D 模型。
+Generate a mock intermediate Live2D package from a single character image.
 
-## 功能特点
+## Features
 
-- AI 自动分析角色图片
-- 自动生成 Live2D 分层
-- 自动生成基础网格与绑定
-- 自动配置物理与动作
-- 支持 MCP 一键流水线调用
+- MCP tools for image analysis, face extraction, layer generation, rigging, physics, motions, and export
+- Server-issued session IDs with TTL, concurrency limits, explicit close support, and status metrics
+- Output directory confinement under `output/`
+- Mock `.moc3` export contract validated before success is reported
+- Explicit `detector_used`, `fallback_reason`, and `confidence_summary` metadata on analysis steps
 
-## 安装
+## Installation
+
+Minimal runtime:
 
 ```bash
-pip install -r requirements.txt
+pip install -e .
 ```
 
-## 使用
+CPU-assisted vision stack:
 
-### 方法 1：在 VS Code 中使用 MCP
+```bash
+pip install -e ".[vision-cpu]"
+```
 
-1. 打开 VS Code 命令面板 (`Ctrl+Shift+P`)
-2. 运行 `MCP: Add Server`
-3. 选择 `Command`
-4. 输入：`python -m mcp_server.server`
+GPU-assisted vision stack:
 
-### 方法 2：直接运行
+```bash
+pip install -e ".[vision-gpu]"
+```
+
+Development tools:
+
+```bash
+pip install -e ".[dev]"
+```
+
+## Usage
+
+### Run the MCP server
 
 ```bash
 python -m mcp_server.server
 ```
 
-### 方法 3：调用完整流水线
+### Run the full pipeline
 
 ```python
 from mcp_server.server import full_pipeline
 
 result = await full_pipeline(
-    image_path="path/to/photo.png",
-    output_dir="output/MyCharacter",
-    model_name="MyCharacter",
+    image_path="ATRI.png",
+    output_dir="output/ATRI",
+    model_name="ATRI",
     motion_types=["idle", "tap", "move", "emotional"],
 )
 ```
 
-## MCP Tools
+### Step-by-step flow
 
-| 工具 | 说明 |
-|-----|------|
-| `analyze_photo` | 分析图片并创建隔离的 `session_id` |
-| `generate_layers` | 生成 Live2D 分层 |
-| `create_mesh` | 创建 ArtMesh 网格 |
-| `setup_rigging` | 设置骨骼绑定 |
-| `configure_physics` | 配置物理效果 |
-| `generate_motions` | 生成动作文件 |
-| `full_pipeline` | 一键完成完整流水线 |
+1. Call `analyze_photo(image_path)` and store the returned `session_id`
+2. Call `detect_face_features(session_id, output_dir)`
+3. Call `generate_layers(session_id, output_dir)`
+4. Call `create_mesh(session_id)`
+5. Call `setup_rigging(session_id)`
+6. Call `configure_physics(session_id)`
+7. Call `generate_motions(session_id, motion_types)`
+8. Call `export_model(session_id, output_dir, model_name)`
+9. Call `close_session(session_id)` when the step flow is complete
 
-## 安全约束
+## Safety constraints
 
-- `output_dir` 必须位于项目 `output/` 目录内
-- `model_name` 仅支持字母、数字、`_`、`-`
-- 支持的输入图片格式：`png`、`jpg`、`jpeg`、`webp`
+- `output_dir` must remain inside the project `output/` directory
+- `model_name` only supports letters, digits, `_`, and `-`
+- input image formats: `png`, `jpg`, `jpeg`, `webp`
+- input image limits: 20 MiB, 4096x4096, 16,777,216 total pixels
+- supported motion types: `idle`, `tap`, `move`, `emotional`
 
-## 系统要求
+## Export notes
 
-- Python 3.8+
-- NVIDIA GPU（推荐 8GB+ 显存）
-- CUDA 11.8+（如使用 GPU）
+- The exporter writes a mock intermediate bundle, not a production-ready Live2D runtime model
+- `model3.json` and the returned file manifest always reference `{model_name}.moc3`
+- `ready_for_cubism_editor` remains `false` until a real Cubism-compatible exporter exists
+- Final validation and export should happen in Cubism Editor before production use
 
 ## License
 

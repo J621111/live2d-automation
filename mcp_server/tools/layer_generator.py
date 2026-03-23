@@ -1,24 +1,26 @@
-"""
-分层生成器 v2
-使用精确分割生成 Live2D 所需图层文件
-"""
+﻿"""Layer generation for normalized Live2D parts."""
+
+from __future__ import annotations
 
 import asyncio
-import numpy as np
 from pathlib import Path
-from typing import Dict, List, Any
+from typing import Any, cast
+
+import cv2
+import numpy as np
 from PIL import Image
 from loguru import logger
-import cv2
-import io
+
+JsonDict = dict[str, Any]
+JsonList = list[JsonDict]
 
 
 class LayerGenerator:
-    """Live2D layer generator v2."""
+    """Live2D layer generator with normalized part handling."""
 
     PRECISE_SEGMENT_TIMEOUT_SECONDS = 15
 
-    def __init__(self):
+    def __init__(self) -> None:
         self.layer_order = [
             "back_hair",
             "body",
@@ -39,56 +41,89 @@ class LayerGenerator:
             "right_hand",
             "accessories",
         ]
-        self.segmenter = None
+        self.segmenter: Any | None = None
+        self.last_generation_metadata: JsonDict = {
+            "detector_used": "unknown",
+            "fallback_reason": None,
+            "confidence_summary": {
+                "count": 0,
+                "average": 0.0,
+                "minimum": 0.0,
+                "maximum": 0.0,
+            },
+        }
 
-    async def initialize(self):
-        """初始化分割器"""
+    async def initialize(self) -> None:
         if self.segmenter is None:
             try:
                 from mcp_server.tools.segmentation import PreciseSegmenter
 
                 self.segmenter = PreciseSegmenter()
                 await self.segmenter.initialize()
-            except ImportError as e:
-                logger.warning(f"Could not load precise segmenter: {e}")
+            except ImportError as exc:
+                logger.warning(f"Could not load precise segmenter: {exc}")
                 self.segmenter = None
 
+    def _confidence_summary(self, parts: JsonDict) -> JsonDict:
+        confidences = [
+            float(part.get("confidence", 0.0))
+            for part in parts.values()
+            if isinstance(part, dict) and "confidence" in part
+        ]
+        if not confidences:
+            return {"count": 0, "average": 0.0, "minimum": 0.0, "maximum": 0.0}
+        return {
+            "count": len(confidences),
+            "average": round(sum(confidences) / len(confidences), 3),
+            "minimum": round(min(confidences), 3),
+            "maximum": round(max(confidences), 3),
+        }
+
     async def generate(
-        self, image_path: str, segments: Dict = None, output_dir: str = None
-    ) -> List[Dict]:
-        """Generate layer files from detected parts."""
+        self,
+        image_path: str,
+        segments: JsonDict | None = None,
+        output_dir: str | None = None,
+    ) -> JsonList:
         output_path = Path(output_dir) if output_dir else Path("output")
         output_path.mkdir(parents=True, exist_ok=True)
 
         image = Image.open(image_path).convert("RGBA")
-        layers = []
-
+        layers: JsonList = []
         normalized_segments = self._normalize_segments(segments)
         if not normalized_segments.get("parts"):
             logger.info("Using precise segmentation...")
             normalized_segments = await self._precise_segment(image_path)
 
-        parts = normalized_segments.get("parts", {})
+        parts = dict(normalized_segments.get("parts", {}))
+        self.last_generation_metadata = {
+            "detector_used": normalized_segments.get("detector_used")
+            or normalized_segments.get("segmenter")
+            or normalized_segments.get("detector")
+            or "provided_parts",
+            "fallback_reason": normalized_segments.get("fallback_reason"),
+            "confidence_summary": normalized_segments.get("confidence_summary")
+            or self._confidence_summary(parts),
+        }
 
         for part_name, part_data in parts.items():
-            if part_data and "bounds" in part_data:
+            if isinstance(part_data, dict) and "bounds" in part_data:
                 layer = await self._create_layer_from_bounds(
                     image,
-                    part_data["bounds"],
-                    part_name,
+                    dict(part_data["bounds"]),
+                    str(part_name),
                     output_path,
-                    part_data.get("mask"),
+                    cast(np.ndarray | None, part_data.get("mask")),
+                    cast(float | None, part_data.get("confidence")),
                 )
-                if layer:
+                if layer is not None:
                     layers.append(layer)
 
         layers = self._sort_layers(layers)
-
         logger.info(f"Generated {len(layers)} layers")
         return layers
 
-    async def _precise_segment(self, image_path: str) -> Dict:
-        """Run precise segmentation with a bounded wait time."""
+    async def _precise_segment(self, image_path: str) -> JsonDict:
         try:
             return await asyncio.wait_for(
                 self._run_precise_segment(image_path),
@@ -96,90 +131,90 @@ class LayerGenerator:
             )
         except asyncio.TimeoutError:
             logger.warning("Precise segmentation timed out, falling back to empty parts")
-            return {"parts": {}}
+            return {
+                "parts": {},
+                "detector_used": "fallback",
+                "fallback_reason": "precise segmentation timed out",
+                "confidence_summary": {
+                    "count": 0,
+                    "average": 0.0,
+                    "minimum": 0.0,
+                    "maximum": 0.0,
+                },
+            }
 
-    async def _run_precise_segment(self, image_path: str) -> Dict:
+    async def _run_precise_segment(self, image_path: str) -> JsonDict:
         await self.initialize()
-
         if self.segmenter is None:
             logger.warning("Precise segmenter unavailable, returning empty parts")
-            return {"parts": {}}
+            return {
+                "parts": {},
+                "detector_used": "fallback",
+                "fallback_reason": "precise segmenter unavailable",
+                "confidence_summary": {
+                    "count": 0,
+                    "average": 0.0,
+                    "minimum": 0.0,
+                    "maximum": 0.0,
+                },
+            }
+        return cast(JsonDict, await self.segmenter.segment_character(image_path))
 
-        return await self.segmenter.segment_character(image_path)
-
-    def _normalize_segments(self, segments: Dict[str, Any] = None) -> Dict[str, Any]:
-        """Normalize legacy analyze_photo output into a flat parts mapping."""
+    def _normalize_segments(self, segments: JsonDict | None = None) -> JsonDict:
         if not segments:
             return {"parts": {}}
-
         if segments.get("parts"):
             return segments
 
-        normalized_parts: Dict[str, Dict[str, Any]] = {}
-        body_parts = segments.get("body_parts", {})
-        for name, data in body_parts.items():
+        normalized_parts: JsonDict = {}
+        for name, data in dict(segments.get("body_parts", {})).items():
             if not isinstance(data, dict):
                 continue
             if "bounds" in data:
-                normalized_parts[name] = data
+                normalized_parts[str(name)] = data
                 continue
-
             for nested_name, nested_data in data.items():
                 if isinstance(nested_data, dict) and "bounds" in nested_data:
-                    normalized_parts[nested_name] = nested_data
-
+                    normalized_parts[str(nested_name)] = nested_data
         return {**segments, "parts": normalized_parts}
 
     async def _create_layer_from_bounds(
         self,
         image: Image.Image,
-        bounds: Dict,
+        bounds: JsonDict,
         part_name: str,
         output_dir: Path,
-        mask: np.ndarray = None,
-    ) -> Dict:
-        """从边界框创建图层"""
+        mask: np.ndarray | None = None,
+        confidence: float | None = None,
+    ) -> JsonDict | None:
         x = int(bounds.get("x", 0))
         y = int(bounds.get("y", 0))
         w = int(bounds.get("width", image.width))
         h = int(bounds.get("height", image.height))
 
-        # 确保边界有效
         x = max(0, min(x, image.width - 1))
         y = max(0, min(y, image.height - 1))
         w = min(w, image.width - x)
         h = min(h, image.height - y)
-
         if w <= 0 or h <= 0:
             return None
 
-        # 提取部位图像
         part_img = image.crop((x, y, x + w, y + h))
-
-        # 应用掩码
         if mask is not None:
             try:
-                # 调整掩码大小
                 mask_resized = cv2.resize(
-                    mask.astype(np.uint8) * 255, (w, h), interpolation=cv2.INTER_LINEAR
+                    mask.astype(np.uint8) * 255,
+                    (w, h),
+                    interpolation=cv2.INTER_LINEAR,
                 )
+                part_img.putalpha(Image.fromarray(mask_resized, mode="L"))
+            except Exception as exc:
+                logger.warning(f"Mask application failed for {part_name}: {exc}")
 
-                # 转换为 PIL
-                mask_pil = Image.fromarray(mask_resized, mode="L")
-
-                # 应用掩码
-                part_img.putalpha(mask_pil)
-            except Exception as e:
-                logger.warning(f"Mask application failed for {part_name}: {e}")
-
-        # 保存图层
         layer_filename = f"layer_{part_name}.png"
         layer_path = output_dir / layer_filename
-
-        # 确保是 RGBA 模式
         if part_img.mode != "RGBA":
             part_img = part_img.convert("RGBA")
-
         part_img.save(layer_path, "PNG")
 
         return {
@@ -197,12 +232,11 @@ class LayerGenerator:
             },
             "texture_path": str(layer_path),
             "z_order": self._get_z_order(part_name),
+            "confidence": confidence if confidence is not None else 0.5,
         }
 
     def _get_z_order(self, part_name: str) -> int:
-        """获取图层的 Z 顺序"""
-        order_map = {name: i for i, name in enumerate(self.layer_order)}
-
+        order_map = {name: index for index, name in enumerate(self.layer_order)}
         name_mapping = {
             "head": "head",
             "torso": "body",
@@ -217,52 +251,42 @@ class LayerGenerator:
             "nose": "nose",
             "mouth": "mouth",
         }
+        return order_map.get(name_mapping.get(part_name, part_name), 50)
 
-        mapped_name = name_mapping.get(part_name, part_name)
-        return order_map.get(mapped_name, 50)
-
-    def _sort_layers(self, layers: List[Dict]) -> List[Dict]:
-        """按 Z 顺序排序图层"""
-        return sorted(layers, key=lambda x: x.get("z_order", 50))
+    def _sort_layers(self, layers: JsonList) -> JsonList:
+        return sorted(layers, key=lambda item: int(item.get("z_order", 50)))
 
     async def generate_with_face_details(
-        self, image_path: str, face_landmarks: Dict = None
-    ) -> List[Dict]:
-        """生成包含面部细节的图层"""
+        self,
+        image_path: str,
+        face_landmarks: JsonDict | None = None,
+    ) -> JsonList:
         layers = await self.generate(image_path)
-
         if face_landmarks is None:
             return layers
 
-        # 添加面部细节图层
         image = Image.open(image_path).convert("RGBA")
-
-        face_parts = {
-            "left_eye": face_landmarks.get("left_eye", []),
-            "right_eye": face_landmarks.get("right_eye", []),
-            "mouth": face_landmarks.get("mouth", []),
-            "nose": face_landmarks.get("nose", []),
-        }
-
-        for part_name, points in face_parts.items():
+        for part_name in ("left_eye", "right_eye", "mouth", "nose"):
+            points = list(face_landmarks.get(part_name, []))
             if not points:
                 continue
-
-            # 计算边界
-            xs = [p["x"] for p in points]
-            ys = [p["y"] for p in points]
-
+            xs = [point["x"] for point in points]
+            ys = [point["y"] for point in points]
             bounds = {
                 "x": min(xs) - 10,
                 "y": min(ys) - 10,
                 "width": max(xs) - min(xs) + 20,
                 "height": max(ys) - min(ys) + 20,
             }
-
             layer = await self._create_layer_from_bounds(
-                image, bounds, part_name, Path("output"), None
+                image,
+                bounds,
+                part_name,
+                Path("output"),
+                None,
+                0.6,
             )
-            if layer:
+            if layer is not None:
                 layers.append(layer)
 
         return layers
