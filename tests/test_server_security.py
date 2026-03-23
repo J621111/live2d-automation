@@ -1,6 +1,4 @@
 import json
-import shutil
-import uuid
 from pathlib import Path
 
 import pytest
@@ -28,24 +26,14 @@ from mcp_server.tools.moc3_generator import Live2DExporter
 from mcp_server.tools.motion_generator import MotionGenerator
 from mcp_server.tools.physics_setup import PhysicsSetup
 
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
-TEST_OUTPUT_ROOT = PROJECT_ROOT / "output" / "test_runtime"
-
 pytestmark = pytest.mark.filterwarnings(
     "ignore:Image size .* exceeds limit .* "
     "decompression bomb DOS attack.:PIL.Image.DecompressionBombWarning"
 )
 
 
-@pytest.fixture(autouse=True)
-def _clean_test_output_root() -> None:
-    if TEST_OUTPUT_ROOT.exists():
-        shutil.rmtree(TEST_OUTPUT_ROOT, ignore_errors=True)
-    TEST_OUTPUT_ROOT.mkdir(parents=True, exist_ok=True)
-
-
-def _test_path(name: str) -> Path:
-    path = TEST_OUTPUT_ROOT / f"{name}_{uuid.uuid4().hex}"
+def _case_dir(tmp_path: Path, name: str) -> Path:
+    path = tmp_path / name
     path.mkdir(parents=True, exist_ok=True)
     return path
 
@@ -66,8 +54,8 @@ def _create_sample_character_image(path: Path) -> Path:
 
 
 @pytest.fixture
-def sample_image_path() -> Path:
-    return _create_sample_character_image(_test_path("input_image") / "character.png")
+def sample_image_path(tmp_path: Path) -> Path:
+    return _create_sample_character_image(_case_dir(tmp_path, "input_image") / "character.png")
 
 
 @pytest.mark.asyncio
@@ -87,9 +75,8 @@ async def test_status_hides_session_ids(sample_image_path: Path) -> None:
 
 
 @pytest.mark.asyncio
-async def test_large_image_is_rejected() -> None:
-    huge_dir = _test_path("huge_image")
-    huge_image = huge_dir / "huge.png"
+async def test_large_image_is_rejected(tmp_path: Path) -> None:
+    huge_image = _case_dir(tmp_path, "huge_image") / "huge.png"
     Image.new("RGBA", (5000, 5000), (255, 0, 0, 255)).save(huge_image, format="PNG")
 
     result = await analyze_photo(str(huge_image))
@@ -109,8 +96,8 @@ async def test_invalid_motion_types_are_rejected() -> None:
 
 
 @pytest.mark.asyncio
-async def test_export_contract_uses_moc3() -> None:
-    bundle_dir = _test_path("bundle")
+async def test_export_contract_uses_moc3(tmp_path: Path) -> None:
+    bundle_dir = _case_dir(tmp_path, "bundle")
     texture_path = bundle_dir / "layer_head.png"
     Image.new("RGBA", (32, 32), (0, 255, 255, 255)).save(texture_path, format="PNG")
 
@@ -144,11 +131,11 @@ async def test_export_contract_uses_moc3() -> None:
 
 
 @pytest.mark.asyncio
-async def test_full_pipeline_closes_session(sample_image_path: Path) -> None:
+async def test_full_pipeline_closes_session(sample_image_path: Path, tmp_path: Path) -> None:
     before = len(session_store)
     result = await full_pipeline(
         image_path=str(sample_image_path),
-        output_dir=str(_test_path("full_pipeline")),
+        output_dir=str(_case_dir(tmp_path, "full_pipeline")),
         model_name="FullModel",
         motion_types=["idle"],
     )
@@ -160,9 +147,10 @@ async def test_full_pipeline_closes_session(sample_image_path: Path) -> None:
 @pytest.mark.asyncio
 async def test_step_flow_retains_session_until_close_and_matches_export(
     sample_image_path: Path,
+    tmp_path: Path,
 ) -> None:
-    step_output = _test_path("step_flow")
-    full_output = _test_path("full_flow")
+    step_output = _case_dir(tmp_path, "step_flow")
+    full_output = _case_dir(tmp_path, "full_flow")
 
     analyze = await analyze_photo(str(sample_image_path))
     assert analyze["status"] == "success"
