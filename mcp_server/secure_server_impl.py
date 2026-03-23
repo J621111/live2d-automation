@@ -287,7 +287,13 @@ def _resolve_image_path(image_path: str) -> Path:
 def _resolve_output_dir(output_dir: str) -> Path:
     if not output_dir or not output_dir.strip():
         raise InputValidationError("output_dir is required.")
-    raw_path = Path(output_dir)
+
+    normalized_output_dir = output_dir.strip().replace("\\", "/")
+    raw_path = Path(normalized_output_dir)
+
+    if ".." in raw_path.parts:
+        raise InputValidationError("output_dir must stay inside the project output directory.")
+
     if raw_path.is_absolute():
         resolved = raw_path.resolve()
     elif raw_path.parts and raw_path.parts[0] == "output":

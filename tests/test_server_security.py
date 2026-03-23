@@ -201,9 +201,10 @@ async def test_analyze_photo_reports_fallback_reason(
     await close_session(result["session_id"])
 
 
-def test_output_dir_traversal_is_rejected() -> None:
+@pytest.mark.parametrize("candidate", ["../outside", r"..\outside"])
+def test_output_dir_traversal_is_rejected(candidate: str) -> None:
     with pytest.raises(InputValidationError):
-        _resolve_output_dir(r"..\outside")
+        _resolve_output_dir(candidate)
 
 
 @pytest.mark.asyncio
