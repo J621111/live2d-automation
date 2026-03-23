@@ -146,7 +146,7 @@ class BoneSystem:
             3x3 变换矩阵
         """
         if bone_id not in self.bones:
-            return np.eye(3)
+            return cast(np.ndarray, np.eye(3))
 
         bone = self.bones[bone_id]
 
