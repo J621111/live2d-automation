@@ -1,0 +1,185 @@
+﻿"""Mask-driven part segmentation for AI-detected semantic parts."""
+
+from __future__ import annotations
+
+from pathlib import Path
+from typing import Any
+
+import cv2
+import numpy as np
+from PIL import Image
+
+from mcp_server.schemas import BoundingBox, DetectedPart, LayerAsset
+
+JsonDict = dict[str, Any]
+
+
+class PartSegmenter:
+    """Extract alpha-isolated layer assets from detected semantic parts."""
+
+    def __init__(self) -> None:
+        self._z_order = {
+            "hair_back": 10,
+            "left_arm": 20,
+            "right_arm": 21,
+            "left_leg": 22,
+            "right_leg": 23,
+            "torso": 30,
+            "head": 40,
+            "face_base": 50,
+            "left_eyebrow": 60,
+            "right_eyebrow": 61,
+            "left_eye": 62,
+            "right_eye": 63,
+            "nose": 64,
+            "mouth": 65,
+            "hair_side_left": 70,
+            "hair_side_right": 71,
+            "hair_front": 72,
+        }
+
+    async def segment(
+        self,
+        image_path: str,
+        detected_parts: list[JsonDict],
+        output_dir: str,
+    ) -> JsonDict:
+        base_output = Path(output_dir)
+        parts_dir = base_output / "ai_parts"
+        masks_dir = base_output / "ai_masks"
+        parts_dir.mkdir(parents=True, exist_ok=True)
+        masks_dir.mkdir(parents=True, exist_ok=True)
+
+        with Image.open(image_path).convert("RGBA") as image:
+            rgba = np.array(image)
+
+        layers: list[LayerAsset] = []
+        for payload in detected_parts:
+            part = self._from_dict(payload)
+            layer = self._extract_layer(rgba, part, parts_dir, masks_dir)
+            if layer is not None:
+                layers.append(layer)
+
+        ordered = sorted(layers, key=lambda item: item.z_order)
+        return {
+            "status": "success",
+            "layers": [layer.to_dict() for layer in ordered],
+            "layers_generated": len(ordered),
+            "output_dir": str(base_output),
+        }
+
+    def _extract_layer(
+        self,
+        rgba: np.ndarray,
+        part: DetectedPart,
+        parts_dir: Path,
+        masks_dir: Path,
+    ) -> LayerAsset | None:
+        x, y, w, h = part.bbox.x, part.bbox.y, part.bbox.width, part.bbox.height
+        crop = rgba[y : y + h, x : x + w]
+        if crop.size == 0:
+            return None
+
+        alpha = crop[:, :, 3]
+        if np.count_nonzero(alpha) == 0:
+            return None
+
+        mask = self._mask_from_polygon(part, crop.shape[1], crop.shape[0])
+        if mask is None:
+            mask = self._foreground_mask(crop, part.name)
+        if np.count_nonzero(mask) == 0:
+            mask = (alpha > 0).astype(np.uint8)
+
+        ys, xs = np.where(mask > 0)
+        if len(xs) == 0 or len(ys) == 0:
+            return None
+
+        min_x = int(xs.min())
+        max_x = int(xs.max()) + 1
+        min_y = int(ys.min())
+        max_y = int(ys.max()) + 1
+        trimmed = crop[min_y:max_y, min_x:max_x].copy()
+        trimmed_mask = mask[min_y:max_y, min_x:max_x] * 255
+        trimmed[:, :, 3] = trimmed_mask
+
+        image_path = parts_dir / f"{part.name}.png"
+        mask_path = masks_dir / f"{part.name}.png"
+        Image.fromarray(trimmed, mode="RGBA").save(image_path, "PNG")
+        Image.fromarray(trimmed_mask.astype(np.uint8), mode="L").save(mask_path, "PNG")
+
+        bounds = BoundingBox(
+            x=x + min_x,
+            y=y + min_y,
+            width=max(1, max_x - min_x),
+            height=max(1, max_y - min_y),
+        )
+        return LayerAsset(
+            name=part.name,
+            group=part.group,
+            side=part.side,
+            path=str(image_path),
+            mask_path=str(mask_path),
+            bounds=bounds,
+            z_order=self._z_order.get(part.name, 80),
+            confidence=part.confidence,
+            detector=part.detector,
+            metadata={"occluded": part.occluded, "attributes": dict(part.attributes)},
+        )
+
+    def _mask_from_polygon(self, part: DetectedPart, width: int, height: int) -> np.ndarray | None:
+        if not part.polygon:
+            return None
+        points = []
+        for point in part.polygon:
+            px = int(point["x"]) - part.bbox.x
+            py = int(point["y"]) - part.bbox.y
+            points.append([max(0, min(px, width - 1)), max(0, min(py, height - 1))])
+        if len(points) < 3:
+            return None
+        polygon = np.array([points], dtype=np.int32)
+        mask = np.zeros((height, width), dtype=np.uint8)
+        cv2.fillPoly(mask, polygon, 1)
+        return mask
+
+    def _foreground_mask(self, crop: np.ndarray, part_name: str) -> np.ndarray:
+        alpha = (crop[:, :, 3] > 0).astype(np.uint8)
+        if alpha.shape[0] < 4 or alpha.shape[1] < 4:
+            return alpha
+
+        rgb = cv2.cvtColor(crop[:, :, :3], cv2.COLOR_RGB2BGR)
+        gray = cv2.cvtColor(rgb, cv2.COLOR_BGR2GRAY)
+        if "eye" in part_name or "eyebrow" in part_name or part_name == "nose":
+            threshold = max(10, int(np.quantile(gray[alpha > 0], 0.25))) if np.count_nonzero(alpha) else 60
+            mask = ((gray <= threshold) & (alpha > 0)).astype(np.uint8)
+        elif part_name == "mouth":
+            red_strength = crop[:, :, 0].astype(np.int16) - crop[:, :, 1].astype(np.int16)
+            threshold = int(np.quantile(red_strength[alpha > 0], 0.65)) if np.count_nonzero(alpha) else 10
+            mask = ((red_strength >= threshold) & (alpha > 0)).astype(np.uint8)
+        else:
+            mask = alpha
+
+        kernel = np.ones((3, 3), np.uint8)
+        mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel, iterations=1)
+        mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel, iterations=1)
+        if np.count_nonzero(mask) >= 6:
+            return mask
+        return alpha
+
+    def _from_dict(self, payload: JsonDict) -> DetectedPart:
+        bbox_payload = dict(payload.get("bbox", {}))
+        return DetectedPart(
+            name=str(payload["name"]),
+            group=str(payload.get("group", "unknown")),
+            side=payload.get("side"),
+            bbox=BoundingBox(
+                x=int(bbox_payload.get("x", 0)),
+                y=int(bbox_payload.get("y", 0)),
+                width=int(bbox_payload.get("width", 1)),
+                height=int(bbox_payload.get("height", 1)),
+            ),
+            confidence=float(payload.get("confidence", 0.0)),
+            detector=str(payload.get("detector", "unknown")),
+            polygon=list(payload.get("polygon", [])),
+            occluded=bool(payload.get("occluded", False)),
+            attributes=dict(payload.get("attributes", {})),
+        )
