@@ -1,4 +1,5 @@
 ﻿from mcp_server.secure_server_impl import (
+    analyze_parts_with_ai,
     analyze_photo,
     close_session,
     configure_physics,
@@ -13,10 +14,12 @@
     main,
     mcp,
     photo_to_live2d_guide,
+    segment_detected_parts,
     setup_rigging,
 )
 
 __all__ = [
+    "analyze_parts_with_ai",
     "analyze_photo",
     "close_session",
     "configure_physics",
@@ -31,6 +34,7 @@ __all__ = [
     "main",
     "mcp",
     "photo_to_live2d_guide",
+    "segment_detected_parts",
     "setup_rigging",
 ]
 

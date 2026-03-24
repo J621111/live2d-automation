@@ -1,4 +1,4 @@
-﻿"""Hardened Live2D Automation MCP server implementation."""
+"""Hardened Live2D Automation MCP server implementation."""
 
 from __future__ import annotations
 
@@ -24,12 +24,14 @@ if str(project_root) not in sys.path:
     sys.path.append(str(project_root))
 
 from core.mesh_generator import ArtMeshGenerator
+from mcp_server.tools.ai_part_detector import AIPartDetector
 from mcp_server.tools.auto_rigger import AutoRigger
 from mcp_server.tools.facial_detector import FacialFeatureDetector
 from mcp_server.tools.image_processor import ImageProcessor
 from mcp_server.tools.layer_generator import LayerGenerator
 from mcp_server.tools.moc3_generator import Live2DExporter as Moc3Exporter
 from mcp_server.tools.motion_generator import MotionGenerator
+from mcp_server.tools.part_segmenter import PartSegmenter
 from mcp_server.tools.physics_setup import PhysicsSetup
 
 mcp = FastMCP("live2d-automation")
@@ -106,6 +108,8 @@ def _empty_state() -> dict[str, Any]:
         "face_output_dir": None,
         "analysis_metadata": {},
         "layer_generation_metadata": {},
+        "ai_parts": [],
+        "ai_part_layers": [],
     }
 
 
@@ -424,6 +428,49 @@ async def _detect_face_features_impl(session_id: str, output_dir: Path) -> dict[
     }
 
 
+async def _analyze_parts_with_ai_impl(image_path: Path, session_id: str) -> dict[str, Any]:
+    logger.info(f"Analyzing semantic parts for session {session_id}: {image_path.name}")
+    detector = AIPartDetector()
+    result = await detector.analyze(str(image_path))
+    state = _get_session_state(session_id)
+    state.clear()
+    state.update(_empty_state())
+    state["input_image"] = str(image_path)
+    state["ai_parts"] = result.get("parts", [])
+    state["analysis_metadata"] = {
+        "detector_used": result.get("detector_used"),
+        "fallback_reason": result.get("fallback_reason"),
+        "confidence_summary": result.get("confidence_summary"),
+    }
+    return {
+        "status": "success",
+        "session_id": session_id,
+        "parts": result.get("parts", []),
+        "part_count": result.get("part_count", 0),
+        "detector_used": result.get("detector_used"),
+        "fallback_reason": result.get("fallback_reason"),
+        "confidence_summary": result.get("confidence_summary"),
+        "message": f"Detected {result.get('part_count', 0)} semantic parts.",
+    }
+
+
+async def _segment_detected_parts_impl(session_id: str, output_dir: Path) -> dict[str, Any]:
+    state = _require_state_field(
+        session_id, "ai_parts", "Run analyze_parts_with_ai before segment_detected_parts."
+    )
+    state["output_dir"] = str(output_dir)
+    segmenter = PartSegmenter()
+    result = await segmenter.segment(state["input_image"], state["ai_parts"], str(output_dir))
+    state["ai_part_layers"] = result.get("layers", [])
+    return {
+        "status": "success",
+        "session_id": session_id,
+        "layers_generated": result.get("layers_generated", 0),
+        "layers": result.get("layers", []),
+        "message": f"Generated {result.get('layers_generated', 0)} AI-guided part layers.",
+    }
+
+
 async def _generate_layers_impl(session_id: str, output_dir: Path) -> dict[str, Any]:
     state = _require_state_field(
         session_id, "segments", "Run analyze_photo before generate_layers."
@@ -431,6 +478,39 @@ async def _generate_layers_impl(session_id: str, output_dir: Path) -> dict[str, 
     logger.info(f"Generating layers for session {session_id}")
     state["output_dir"] = str(output_dir)
     face_features, face_layers, _ = await _ensure_face_features_impl(session_id, output_dir)
+
+    ai_detector = AIPartDetector()
+    ai_result = await ai_detector.analyze(state["input_image"])
+    state["ai_parts"] = ai_result.get("parts", [])
+    ai_segmenter = PartSegmenter()
+    ai_layer_result = await ai_segmenter.segment(
+        state["input_image"],
+        state["ai_parts"],
+        str(output_dir),
+    )
+    ai_layers = ai_layer_result.get("layers", [])
+    if ai_layers:
+        state["ai_part_layers"] = ai_layers
+        state["layers"] = ai_layers
+        state["layer_generation_metadata"] = {
+            "detector_used": ai_result.get("detector_used"),
+            "fallback_reason": ai_result.get("fallback_reason"),
+            "confidence_summary": ai_result.get("confidence_summary"),
+            "source": "semantic_refine",
+        }
+        return {
+            "status": "success",
+            "session_id": session_id,
+            "layers_generated": len(ai_layers),
+            "layers": ai_layers,
+            "face_layers_extracted": len(face_layers),
+            "detector_used": ai_result.get("detector_used"),
+            "fallback_reason": ai_result.get("fallback_reason"),
+            "confidence_summary": ai_result.get("confidence_summary"),
+            "face_detector_used": face_features.get("detector_used"),
+            "message": f"Generated {len(ai_layers)} AI-guided layers.",
+        }
+
     generator = LayerGenerator()
     layers = await generator.generate(
         image_path=state["input_image"], segments=state["segments"], output_dir=str(output_dir)
@@ -534,6 +614,32 @@ async def _export_model_impl(session_id: str, output_dir: Path, model_name: str)
 
 
 @mcp.tool()
+async def analyze_parts_with_ai(image_path: str) -> dict[str, Any]:
+    session_id = _create_session()
+    try:
+        resolved_image = _resolve_image_path(image_path)
+        with _session_operation(session_id):
+            return await _analyze_parts_with_ai_impl(resolved_image, session_id)
+    except InputValidationError as exc:
+        _remove_session(session_id, reason="completed")
+        logger.warning(f"Validation error in AI part analysis for {session_id}: {exc}")
+        return _build_error_payload(
+            error_code="invalid_input",
+            message=str(exc),
+            session_id=session_id,
+            validation_errors=[str(exc)],
+        )
+    except Exception:
+        _remove_session(session_id, reason="completed")
+        logger.exception(f"AI part analysis failed for session {session_id}")
+        return _build_error_payload(
+            error_code="ai_part_analysis_failed",
+            message="AI part analysis failed. Check server logs for details.",
+            session_id=session_id,
+        )
+
+
+@mcp.tool()
 async def analyze_photo(image_path: str) -> dict[str, Any]:
     session_id = _create_session()
     try:
@@ -556,6 +662,31 @@ async def analyze_photo(image_path: str) -> dict[str, Any]:
             error_code="analysis_failed",
             message="Photo analysis failed. Check server logs for details.",
             session_id=session_id,
+        )
+
+
+@mcp.tool()
+async def segment_detected_parts(session_id: str, output_dir: str) -> dict[str, Any]:
+    try:
+        resolved_output_dir = _resolve_output_dir(output_dir)
+        with _session_operation(session_id):
+            return await _segment_detected_parts_impl(session_id, resolved_output_dir)
+    except InputValidationError as exc:
+        logger.warning(f"Validation error in segment_detected_parts for {session_id}: {exc}")
+        return _build_error_payload(
+            error_code="invalid_input",
+            message=str(exc),
+            session_id=session_id,
+            validation_errors=[str(exc)],
+            partial_outputs=_partial_outputs(session_id),
+        )
+    except Exception:
+        logger.exception(f"AI part segmentation failed for session {session_id}")
+        return _build_error_payload(
+            error_code="ai_part_segmentation_failed",
+            message="AI part segmentation failed. Check server logs for details.",
+            session_id=session_id,
+            partial_outputs=_partial_outputs(session_id),
         )
 
 
