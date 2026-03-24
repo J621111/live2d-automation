@@ -118,7 +118,11 @@ class AIPartDetector:
                         0.98,
                         float(part.get("confidence", 0.4)) + (0.1 if refined_flag else 0.0),
                     ),
-                    detector="semantic_refine_v1" if refined_flag else str(result.get("detector_used", "heuristic")),
+                    detector=(
+                        "semantic_refine_v1"
+                        if refined_flag
+                        else str(result.get("detector_used", "heuristic"))
+                    ),
                     polygon=polygon_points,
                     attributes={"source": "face_detector", "refined": refined_flag},
                 )
@@ -156,7 +160,7 @@ class AIPartDetector:
         else:
             return None
 
-        kernel = np.ones((3, 3), np.uint8)
+        kernel: np.ndarray = np.ones((3, 3), np.uint8)
         mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel, iterations=1)
         mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel, iterations=1)
         component = self._best_component(mask, name)
@@ -186,8 +190,7 @@ class AIPartDetector:
             height=max(1, max_y - y),
         )
         polygon = [
-            {"x": int(point[0][0]) + box.x, "y": int(point[0][1]) + box.y}
-            for point in contour
+            {"x": int(point[0][0]) + box.x, "y": int(point[0][1]) + box.y} for point in contour
         ]
         return global_box, polygon
 
@@ -216,10 +219,6 @@ class AIPartDetector:
             area = int(stats[label, cv2.CC_STAT_AREA])
             if area < 4:
                 continue
-            x = int(stats[label, cv2.CC_STAT_LEFT])
-            y = int(stats[label, cv2.CC_STAT_TOP])
-            w = int(stats[label, cv2.CC_STAT_WIDTH])
-            h = int(stats[label, cv2.CC_STAT_HEIGHT])
             cx, cy = centroids[label]
             norm_dx = abs((cx / mask.shape[1]) - 0.5)
             norm_dy = abs((cy / mask.shape[0]) - expected_y)

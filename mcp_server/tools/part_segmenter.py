@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import cv2
 import numpy as np
@@ -99,7 +99,7 @@ class PartSegmenter:
         min_y = int(ys.min())
         max_y = int(ys.max()) + 1
         trimmed = crop[min_y:max_y, min_x:max_x].copy()
-        trimmed_mask = mask[min_y:max_y, min_x:max_x] * 255
+        trimmed_mask: np.ndarray = mask[min_y:max_y, min_x:max_x] * 255
         trimmed[:, :, 3] = trimmed_mask
 
         image_path = parts_dir / f"{part.name}.png"
@@ -137,33 +137,37 @@ class PartSegmenter:
         if len(points) < 3:
             return None
         polygon = np.array([points], dtype=np.int32)
-        mask = np.zeros((height, width), dtype=np.uint8)
+        mask: np.ndarray = np.zeros((height, width), dtype=np.uint8)
         cv2.fillPoly(mask, polygon, 1)
-        return mask
+        return cast(np.ndarray, np.asarray(mask, dtype=np.uint8))
 
     def _foreground_mask(self, crop: np.ndarray, part_name: str) -> np.ndarray:
         alpha = (crop[:, :, 3] > 0).astype(np.uint8)
         if alpha.shape[0] < 4 or alpha.shape[1] < 4:
-            return alpha
+            return cast(np.ndarray, alpha)
 
         rgb = cv2.cvtColor(crop[:, :, :3], cv2.COLOR_RGB2BGR)
         gray = cv2.cvtColor(rgb, cv2.COLOR_BGR2GRAY)
         if "eye" in part_name or "eyebrow" in part_name or part_name == "nose":
-            threshold = max(10, int(np.quantile(gray[alpha > 0], 0.25))) if np.count_nonzero(alpha) else 60
-            mask = ((gray <= threshold) & (alpha > 0)).astype(np.uint8)
+            threshold = (
+                max(10, int(np.quantile(gray[alpha > 0], 0.25))) if np.count_nonzero(alpha) else 60
+            )
+            mask: np.ndarray = ((gray <= threshold) & (alpha > 0)).astype(np.uint8)
         elif part_name == "mouth":
             red_strength = crop[:, :, 0].astype(np.int16) - crop[:, :, 1].astype(np.int16)
-            threshold = int(np.quantile(red_strength[alpha > 0], 0.65)) if np.count_nonzero(alpha) else 10
+            threshold = (
+                int(np.quantile(red_strength[alpha > 0], 0.65)) if np.count_nonzero(alpha) else 10
+            )
             mask = ((red_strength >= threshold) & (alpha > 0)).astype(np.uint8)
         else:
             mask = alpha
 
-        kernel = np.ones((3, 3), np.uint8)
+        kernel: np.ndarray = np.ones((3, 3), np.uint8)
         mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel, iterations=1)
         mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel, iterations=1)
         if np.count_nonzero(mask) >= 6:
-            return mask
-        return alpha
+            return cast(np.ndarray, np.asarray(mask, dtype=np.uint8))
+        return cast(np.ndarray, np.asarray(alpha, dtype=np.uint8))
 
     def _from_dict(self, payload: JsonDict) -> DetectedPart:
         bbox_payload = dict(payload.get("bbox", {}))

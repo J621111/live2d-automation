@@ -1,6 +1,7 @@
 ﻿from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 
 import pytest
 from PIL import Image, ImageDraw
@@ -13,8 +14,10 @@ from mcp_server.secure_server_impl import (
     segment_detected_parts,
 )
 
+JsonDict = dict[str, Any]
 
-def _part_by_name(parts: list[dict[str, object]], name: str) -> dict[str, object]:
+
+def _part_by_name(parts: list[JsonDict], name: str) -> JsonDict:
     for part in parts:
         if part.get("name") == name:
             return part
@@ -51,7 +54,7 @@ async def test_analyze_parts_with_ai_returns_structured_face_parts(
     assert result["part_count"] >= 8
     assert result["detector_used"] == "semantic_refine_v1"
 
-    parts = result["parts"]
+    parts: list[JsonDict] = result["parts"]
     names = {part["name"] for part in parts}
     assert {"left_eye", "right_eye", "mouth", "left_eyebrow", "right_eyebrow"}.issubset(names)
 
@@ -76,7 +79,8 @@ async def test_segment_detected_parts_tightens_eye_crop(
     session_id = analyze_result["session_id"]
 
     try:
-        left_eye_part = _part_by_name(analyze_result["parts"], "left_eye")
+        analyze_parts: list[JsonDict] = analyze_result["parts"]
+        left_eye_part = _part_by_name(analyze_parts, "left_eye")
         segment_result = await segment_detected_parts(session_id, str(tmp_path / "ai_segmentation"))
         assert segment_result["status"] == "success"
         assert segment_result["layers_generated"] >= 5
