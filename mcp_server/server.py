@@ -1,4 +1,4 @@
-﻿from mcp_server.secure_server_impl import (
+from mcp_server.secure_server_impl import (
     analyze_parts_with_ai,
     analyze_photo,
     build_cubism_psd,
@@ -15,8 +15,10 @@
     main,
     mcp,
     photo_to_live2d_guide,
+    prepare_cubism_automation,
     segment_detected_parts,
     setup_rigging,
+    validate_cubism_export,
 )
 
 __all__ = [
@@ -36,8 +38,10 @@ __all__ = [
     "main",
     "mcp",
     "photo_to_live2d_guide",
+    "prepare_cubism_automation",
     "segment_detected_parts",
     "setup_rigging",
+    "validate_cubism_export",
 ]
 
 

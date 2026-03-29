@@ -26,6 +26,8 @@ if str(project_root) not in sys.path:
 from core.mesh_generator import ArtMeshGenerator
 from mcp_server.tools.ai_part_detector import AIPartDetector
 from mcp_server.tools.auto_rigger import AutoRigger
+from mcp_server.tools.cubism_bridge import CubismBridge
+from mcp_server.tools.export_validator import CubismExportValidator
 from mcp_server.tools.facial_detector import FacialFeatureDetector
 from mcp_server.tools.image_processor import ImageProcessor
 from mcp_server.tools.layer_generator import LayerGenerator
@@ -118,6 +120,7 @@ def _empty_state() -> dict[str, Any]:
         "ai_part_layers": [],
         "cubism_template_mapping": {},
         "cubism_psd_path": None,
+        "cubism_automation_plan": {},
     }
 
 
@@ -515,6 +518,69 @@ async def _build_cubism_psd_impl(
     }
 
 
+async def _prepare_cubism_automation_impl(
+    session_id: str,
+    output_dir: Path,
+    template_id: str,
+    model_name: str,
+    editor_path: str | None,
+) -> dict[str, Any]:
+    state = _get_session_state(session_id)
+    psd_path = state.get("cubism_psd_path")
+    if not psd_path:
+        raise InputValidationError("Run build_cubism_psd before prepare_cubism_automation.")
+
+    psd_file = Path(str(psd_path))
+    if not psd_file.exists() or not psd_file.is_file():
+        raise InputValidationError(
+            "The prepared Cubism PSD package is missing. Re-run build_cubism_psd before prepare_cubism_automation."
+        )
+
+    bridge = CubismBridge()
+    editor_info = bridge.discover_editor(editor_path)
+    plan = bridge.build_plan(
+        psd_path=str(psd_path),
+        output_dir=str(output_dir),
+        template_id=template_id,
+        model_name=model_name,
+        editor_info=editor_info,
+    )
+    plan_path = bridge.write_plan(plan, str(output_dir), model_name)
+    state["cubism_automation_plan"] = {**plan, "plan_path": plan_path}
+    return {
+        "status": plan.get("status", "blocked"),
+        "session_id": session_id,
+        "template_id": template_id,
+        "editor": editor_info,
+        "plan_path": plan_path,
+        "steps": plan.get("steps", []),
+        "message": (
+            "Cubism automation plan is ready."
+            if plan.get("status") == "ready"
+            else "Cubism automation plan was created, but the editor executable was not found."
+        ),
+    }
+
+
+async def _validate_cubism_export_impl(output_dir: Path, model_name: str) -> dict[str, Any]:
+    validator = CubismExportValidator()
+    result = validator.validate(str(output_dir), model_name)
+    return {
+        "status": result.get("status", "error"),
+        "output_dir": str(output_dir),
+        "model_name": model_name,
+        "missing": result.get("missing", []),
+        "warnings": result.get("warnings", []),
+        "errors": result.get("errors", []),
+        "checks": result.get("checks", {}),
+        "message": (
+            "Cubism export bundle validated successfully."
+            if result.get("status") == "success"
+            else "Cubism export bundle is incomplete."
+        ),
+    }
+
+
 async def _generate_layers_impl(session_id: str, output_dir: Path) -> dict[str, Any]:
     state = _require_state_field(
         session_id, "segments", "Run analyze_photo before generate_layers."
@@ -775,6 +841,64 @@ async def build_cubism_psd(
             message="Cubism PSD build failed. Check server logs for details.",
             session_id=session_id,
             partial_outputs=_partial_outputs(session_id),
+        )
+
+
+@mcp.tool()
+async def prepare_cubism_automation(
+    session_id: str,
+    output_dir: str,
+    template_id: str = "standard_bust_up",
+    model_name: str = "ATRI",
+    editor_path: str | None = None,
+) -> dict[str, Any]:
+    try:
+        resolved_output_dir = _resolve_output_dir(output_dir)
+        safe_model_name = _validate_model_name(model_name)
+        with _session_operation(session_id):
+            return await _prepare_cubism_automation_impl(
+                session_id,
+                resolved_output_dir,
+                template_id,
+                safe_model_name,
+                editor_path,
+            )
+    except InputValidationError as exc:
+        logger.warning(f"Validation error in prepare_cubism_automation for {session_id}: {exc}")
+        return _build_error_payload(
+            error_code="invalid_input",
+            message=str(exc),
+            session_id=session_id,
+            validation_errors=[str(exc)],
+            partial_outputs=_partial_outputs(session_id),
+        )
+    except Exception:
+        logger.exception(f"Cubism automation planning failed for session {session_id}")
+        return _build_error_payload(
+            error_code="cubism_automation_prepare_failed",
+            message="Cubism automation planning failed. Check server logs for details.",
+            session_id=session_id,
+            partial_outputs=_partial_outputs(session_id),
+        )
+
+
+@mcp.tool()
+async def validate_cubism_export(output_dir: str, model_name: str = "ATRI") -> dict[str, Any]:
+    try:
+        resolved_output_dir = _resolve_output_dir(output_dir)
+        safe_model_name = _validate_model_name(model_name)
+        return await _validate_cubism_export_impl(resolved_output_dir, safe_model_name)
+    except InputValidationError as exc:
+        return _build_error_payload(
+            error_code="invalid_input",
+            message=str(exc),
+            validation_errors=[str(exc)],
+        )
+    except Exception:
+        logger.exception("Cubism export validation failed")
+        return _build_error_payload(
+            error_code="cubism_export_validation_failed",
+            message="Cubism export validation failed. Check server logs for details.",
         )
 
 
