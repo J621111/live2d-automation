@@ -1,0 +1,42 @@
+﻿{
+  "template_id": "standard_bust_up",
+  "description": "Standard anime bust-up template for Cubism import.",
+  "required_parts": [
+    "torso",
+    "head",
+    "face_base",
+    "left_eye",
+    "right_eye",
+    "mouth"
+  ],
+  "optional_parts": [
+    "left_eyebrow",
+    "right_eyebrow",
+    "nose",
+    "hair_front",
+    "hair_back",
+    "hair_side_left",
+    "hair_side_right",
+    "left_arm",
+    "right_arm"
+  ],
+  "mappings": {
+    "torso": "Body/Torso",
+    "head": "Body/Head",
+    "face_base": "Face/Base",
+    "left_eye": "Face/EyeL",
+    "right_eye": "Face/EyeR",
+    "left_eyebrow": "Face/BrowL",
+    "right_eyebrow": "Face/BrowR",
+    "nose": "Face/Nose",
+    "mouth": "Face/Mouth",
+    "hair_front": "Hair/Front",
+    "hair_back": "Hair/Back",
+    "hair_side_left": "Hair/SideL",
+    "hair_side_right": "Hair/SideR",
+    "left_arm": "Body/ArmL",
+    "right_arm": "Body/ArmR",
+    "left_leg": "Body/LegL",
+    "right_leg": "Body/LegR"
+  }
+}
