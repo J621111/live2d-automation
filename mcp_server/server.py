@@ -1,6 +1,7 @@
 ﻿from mcp_server.secure_server_impl import (
     analyze_parts_with_ai,
     analyze_photo,
+    build_cubism_psd,
     close_session,
     configure_physics,
     create_mesh,
@@ -21,6 +22,7 @@
 __all__ = [
     "analyze_parts_with_ai",
     "analyze_photo",
+    "build_cubism_psd",
     "close_session",
     "configure_physics",
     "create_mesh",

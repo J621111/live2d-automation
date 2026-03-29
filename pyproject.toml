@@ -27,19 +27,18 @@ dependencies = [
     "numpy>=1.24.0",
     "opencv-python>=4.8.0",
     "pillow>=10.0.0",
+    "psd-tools>=1.9.0",
     "scipy>=1.11.0",
 ]
 
 [project.optional-dependencies]
 vision-cpu = [
     "mediapipe>=0.10.0",
-    "psd-tools>=1.9.0",
     "rembg>=2.0.0",
 ]
 vision-gpu = [
     "mediapipe>=0.10.0",
     "onnxruntime-gpu>=1.16.0",
-    "psd-tools>=1.9.0",
     "rembg>=2.0.0",
     "torch>=2.0.0",
     "torchvision>=0.15.0",
@@ -64,6 +63,9 @@ Issues = "https://github.com/live2d-automation/live2d-automation/issues"
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["core", "core.*", "mcp_server", "mcp_server.*"]
+
+[tool.setuptools.package-data]
+mcp_server = ["templates/*.json"]
 
 [tool.black]
 line-length = 100

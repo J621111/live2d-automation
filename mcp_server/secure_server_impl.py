@@ -33,6 +33,8 @@ from mcp_server.tools.moc3_generator import Live2DExporter as Moc3Exporter
 from mcp_server.tools.motion_generator import MotionGenerator
 from mcp_server.tools.part_segmenter import PartSegmenter
 from mcp_server.tools.physics_setup import PhysicsSetup
+from mcp_server.tools.psd_builder import CubismPSDBuilder
+from mcp_server.tools.template_mapper import TemplateMapper
 
 mcp = FastMCP("live2d-automation")
 
@@ -50,6 +52,10 @@ MAX_MOTION_TYPES = len(DEFAULT_MOTION_TYPES)
 
 PILImage.MAX_IMAGE_PIXELS = MAX_IMAGE_PIXELS
 ImageFile.LOAD_TRUNCATED_IMAGES = False
+
+
+def _template_dirs() -> list[Path]:
+    return [project_root / "templates", project_root / "mcp_server" / "templates"]
 
 
 def _env_int(name: str, default: int, minimum: int = 1) -> int:
@@ -110,6 +116,8 @@ def _empty_state() -> dict[str, Any]:
         "layer_generation_metadata": {},
         "ai_parts": [],
         "ai_part_layers": [],
+        "cubism_template_mapping": {},
+        "cubism_psd_path": None,
     }
 
 
@@ -471,6 +479,42 @@ async def _segment_detected_parts_impl(session_id: str, output_dir: Path) -> dic
     }
 
 
+async def _build_cubism_psd_impl(
+    session_id: str,
+    output_dir: Path,
+    template_id: str,
+    model_name: str,
+) -> dict[str, Any]:
+    state = _get_session_state(session_id)
+    layers = list(state.get("ai_part_layers") or state.get("layers") or [])
+    if not layers:
+        raise InputValidationError("Run generate_layers before build_cubism_psd.")
+
+    mapper = TemplateMapper(_template_dirs())
+    mapping = mapper.map_layers(layers, template_id)
+    builder = CubismPSDBuilder()
+    result = await builder.build(layers, mapping, str(output_dir), model_name)
+    state["cubism_template_mapping"] = mapping
+    state["cubism_psd_path"] = result.get("psd_path")
+    state["output_dir"] = str(output_dir)
+    return {
+        "status": result.get("status", "error"),
+        "session_id": session_id,
+        "template_id": template_id,
+        "psd_path": result.get("psd_path"),
+        "preview_path": result.get("preview_path"),
+        "manifest_path": result.get("manifest_path"),
+        "mapping_path": result.get("mapping_path"),
+        "coverage": result.get("coverage", 0.0),
+        "missing_required": result.get("missing_required", []),
+        "message": (
+            f"Built Cubism PSD package for template '{template_id}'."
+            if not result.get("missing_required")
+            else f"Built Cubism PSD package with missing required parts: {result.get('missing_required', [])}."
+        ),
+    }
+
+
 async def _generate_layers_impl(session_id: str, output_dir: Path) -> dict[str, Any]:
     state = _require_state_field(
         session_id, "segments", "Run analyze_photo before generate_layers."
@@ -685,6 +729,50 @@ async def segment_detected_parts(session_id: str, output_dir: str) -> dict[str, 
         return _build_error_payload(
             error_code="ai_part_segmentation_failed",
             message="AI part segmentation failed. Check server logs for details.",
+            session_id=session_id,
+            partial_outputs=_partial_outputs(session_id),
+        )
+
+
+@mcp.tool()
+async def build_cubism_psd(
+    session_id: str,
+    output_dir: str,
+    template_id: str = "standard_bust_up",
+    model_name: str = "ATRI",
+) -> dict[str, Any]:
+    try:
+        resolved_output_dir = _resolve_output_dir(output_dir)
+        safe_model_name = _validate_model_name(model_name)
+        with _session_operation(session_id):
+            return await _build_cubism_psd_impl(
+                session_id,
+                resolved_output_dir,
+                template_id,
+                safe_model_name,
+            )
+    except InputValidationError as exc:
+        logger.warning(f"Validation error in build_cubism_psd for {session_id}: {exc}")
+        return _build_error_payload(
+            error_code="invalid_input",
+            message=str(exc),
+            session_id=session_id,
+            validation_errors=[str(exc)],
+            partial_outputs=_partial_outputs(session_id),
+        )
+    except FileNotFoundError as exc:
+        logger.warning(f"Template error in build_cubism_psd for {session_id}: {exc}")
+        return _build_error_payload(
+            error_code="template_not_found",
+            message=str(exc),
+            session_id=session_id,
+            partial_outputs=_partial_outputs(session_id),
+        )
+    except Exception:
+        logger.exception(f"Cubism PSD build failed for session {session_id}")
+        return _build_error_payload(
+            error_code="cubism_psd_build_failed",
+            message="Cubism PSD build failed. Check server logs for details.",
             session_id=session_id,
             partial_outputs=_partial_outputs(session_id),
         )
@@ -997,11 +1085,8 @@ def get_status() -> str:
 
 @mcp.resource("live2d://templates")
 def get_templates() -> str:
-    templates_dir = project_root / "templates"
-    templates = []
-    if templates_dir.exists():
-        templates = [f.stem for f in templates_dir.glob("*.json")]
-    return json.dumps({"templates": templates}, indent=2)
+    mapper = TemplateMapper(_template_dirs())
+    return json.dumps({"templates": mapper.available_templates()}, indent=2)
 
 
 @mcp.prompt()
