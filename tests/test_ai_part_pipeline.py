@@ -13,6 +13,8 @@ from mcp_server.secure_server_impl import (
     generate_layers,
     segment_detected_parts,
 )
+from mcp_server.tools.ai_part_detector import AIPartDetector
+from mcp_server.tools.part_detection_backends.api_backend import APIPartDetectionBackend
 
 JsonDict = dict[str, Any]
 
@@ -118,5 +120,133 @@ async def test_generate_layers_prefers_semantic_refine_path(
         assert result["detector_used"] == "semantic_refine_v1"
         names = {layer["name"] for layer in result["layers"]}
         assert {"left_eye", "right_eye", "hair_front", "torso"}.issubset(names)
+    finally:
+        await close_session(session_id)
+
+
+@pytest.mark.asyncio
+async def test_ai_part_detector_api_backend_uses_remote_keypoint_overrides(
+    sample_image_path: Path,
+) -> None:
+    def fake_transport(_url: str, payload: JsonDict, _headers: JsonDict) -> JsonDict:
+        fallback_names = {part["name"] for part in payload["fallback_parts"]}
+        assert {"left_eye", "right_eye", "mouth"}.issubset(fallback_names)
+        return {
+            "parts": [
+                {
+                    "name": "left_eye",
+                    "group": "face",
+                    "side": "left",
+                    "bbox": {"x": 288, "y": 184, "width": 82, "height": 38},
+                    "polygon": [
+                        {"x": 290, "y": 190},
+                        {"x": 366, "y": 188},
+                        {"x": 360, "y": 220},
+                    ],
+                    "confidence": 0.97,
+                },
+                {
+                    "name": "right_eye",
+                    "group": "face",
+                    "side": "right",
+                    "bbox": {"x": 404, "y": 184, "width": 84, "height": 38},
+                    "polygon": [
+                        {"x": 406, "y": 190},
+                        {"x": 484, "y": 188},
+                        {"x": 476, "y": 220},
+                    ],
+                    "confidence": 0.96,
+                },
+            ]
+        }
+
+    detector = AIPartDetector(backend_name="api", api_transport=fake_transport)
+    result = await detector.analyze(str(sample_image_path))
+
+    assert result["backend_used"] == "api"
+    assert result["detector_used"] == "hybrid_api_v1"
+    assert result["api_metadata"]["refined_parts"] == ["left_eye", "right_eye"]
+
+    left_eye = _part_by_name(result["parts"], "left_eye")
+    right_eye = _part_by_name(result["parts"], "right_eye")
+    assert left_eye["bbox"]["x"] == 288
+    assert right_eye["bbox"]["x"] == 404
+    assert left_eye["attributes"]["source"] == "api_backend"
+
+
+@pytest.mark.asyncio
+async def test_ai_part_detector_api_backend_falls_back_without_configuration(
+    sample_image_path: Path,
+) -> None:
+    detector = AIPartDetector(backend_name="api")
+    result = await detector.analyze(str(sample_image_path))
+
+    assert result["backend_used"] == "api"
+    assert result["detector_used"] == "semantic_refine_v1"
+    assert "using heuristic fallback" in str(result["fallback_reason"]).lower()
+
+
+@pytest.mark.asyncio
+async def test_mcp_pipeline_can_use_api_backend_via_environment(
+    sample_image_path: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fake_transport(
+        self: APIPartDetectionBackend, _url: str, payload: JsonDict, _headers: JsonDict
+    ) -> JsonDict:
+        fallback_names = {part["name"] for part in payload["fallback_parts"]}
+        assert {"left_eye", "right_eye"}.issubset(fallback_names)
+        return {
+            "parts": [
+                {
+                    "name": "left_eye",
+                    "group": "face",
+                    "side": "left",
+                    "bbox": {"x": 280, "y": 182, "width": 88, "height": 42},
+                    "polygon": [
+                        {"x": 282, "y": 190},
+                        {"x": 364, "y": 188},
+                        {"x": 356, "y": 222},
+                    ],
+                    "confidence": 0.98,
+                },
+                {
+                    "name": "right_eye",
+                    "group": "face",
+                    "side": "right",
+                    "bbox": {"x": 404, "y": 182, "width": 88, "height": 42},
+                    "polygon": [
+                        {"x": 406, "y": 190},
+                        {"x": 488, "y": 188},
+                        {"x": 480, "y": 222},
+                    ],
+                    "confidence": 0.98,
+                },
+            ]
+        }
+
+    monkeypatch.setenv("LIVE2D_PART_BACKEND", "api")
+    monkeypatch.setenv("LIVE2D_PART_API_URL", "https://example.invalid/parts")
+    monkeypatch.setattr(APIPartDetectionBackend, "_default_transport", fake_transport)
+
+    analyze_result = await analyze_parts_with_ai(str(sample_image_path))
+    assert analyze_result["status"] == "success"
+    session_id = analyze_result["session_id"]
+
+    try:
+        left_eye = _part_by_name(analyze_result["parts"], "left_eye")
+        right_eye = _part_by_name(analyze_result["parts"], "right_eye")
+        assert analyze_result["backend_used"] == "api"
+        assert analyze_result["detector_used"] == "hybrid_api_v1"
+        assert left_eye["bbox"]["x"] == 280
+        assert right_eye["bbox"]["x"] == 404
+
+        segment_result = await segment_detected_parts(
+            session_id, str(tmp_path / "api_segmentation")
+        )
+        assert segment_result["status"] == "success"
+        segmented_left_eye = _part_by_name(segment_result["layers"], "left_eye")
+        assert segmented_left_eye["bounds"]["x"] >= 280
     finally:
         await close_session(session_id)
