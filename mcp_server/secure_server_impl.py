@@ -449,6 +449,7 @@ async def _analyze_parts_with_ai_impl(image_path: Path, session_id: str) -> dict
     state["input_image"] = str(image_path)
     state["ai_parts"] = result.get("parts", [])
     state["analysis_metadata"] = {
+        "backend_used": result.get("backend_used"),
         "detector_used": result.get("detector_used"),
         "fallback_reason": result.get("fallback_reason"),
         "confidence_summary": result.get("confidence_summary"),
@@ -458,6 +459,7 @@ async def _analyze_parts_with_ai_impl(image_path: Path, session_id: str) -> dict
         "session_id": session_id,
         "parts": result.get("parts", []),
         "part_count": result.get("part_count", 0),
+        "backend_used": result.get("backend_used"),
         "detector_used": result.get("detector_used"),
         "fallback_reason": result.get("fallback_reason"),
         "confidence_summary": result.get("confidence_summary"),
