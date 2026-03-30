@@ -1,8 +1,9 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 from pathlib import Path
 from typing import Any
 
+import numpy as np
 import pytest
 from PIL import Image, ImageDraw
 
@@ -26,6 +27,23 @@ def _part_by_name(parts: list[JsonDict], name: str) -> JsonDict:
     raise AssertionError(f"missing part: {name}")
 
 
+def _layer_stats(layer_payload: JsonDict) -> dict[str, float]:
+    with Image.open(Path(str(layer_payload["path"]))).convert("RGBA") as image:
+        rgba = np.array(image)
+
+    alpha = rgba[:, :, 3] > 0
+    assert np.count_nonzero(alpha) > 0
+    active_pixels = rgba[alpha]
+    occupancy = float(np.count_nonzero(alpha)) / float(alpha.size)
+    return {
+        "occupancy": occupancy,
+        "mean_r": float(active_pixels[:, 0].mean()),
+        "mean_g": float(active_pixels[:, 1].mean()),
+        "mean_b": float(active_pixels[:, 2].mean()),
+        "mean_gray": float(active_pixels[:, :3].mean(axis=1).mean()),
+    }
+
+
 def _create_sample_character_image(path: Path) -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
     image = Image.new("RGBA", (768, 1024), (245, 247, 252, 255))
@@ -36,6 +54,8 @@ def _create_sample_character_image(path: Path) -> Path:
     draw.ellipse((412, 178, 472, 238), fill=(255, 255, 255, 255))
     draw.ellipse((318, 198, 340, 220), fill=(48, 67, 110, 255))
     draw.ellipse((434, 198, 456, 220), fill=(48, 67, 110, 255))
+    draw.ellipse((324, 202, 330, 208), fill=(252, 253, 255, 255))
+    draw.ellipse((440, 202, 446, 208), fill=(252, 253, 255, 255))
     draw.arc((332, 248, 436, 314), start=15, end=165, fill=(180, 82, 102, 255), width=5)
     draw.rectangle((250, 118, 518, 164), fill=(34, 45, 92, 255))
     image.save(path, format="PNG")
@@ -397,5 +417,89 @@ async def test_generate_layers_can_use_api_backend_via_environment(
         assert left_eye_white["bounds"]["width"] < left_eye["bounds"]["width"]
         assert left_iris["bounds"]["width"] <= left_eye_white["bounds"]["width"]
         assert left_eye_highlight["bounds"]["width"] <= left_iris["bounds"]["width"]
+    finally:
+        await close_session(session_id)
+
+
+@pytest.mark.asyncio
+async def test_generate_layers_api_backend_validates_eye_mask_quality(
+    sample_image_path: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fake_transport(
+        self: APIPartDetectionBackend, _url: str, _payload: JsonDict, _headers: JsonDict
+    ) -> JsonDict:
+        return {
+            "parts": [
+                {
+                    "name": "left_eye_white",
+                    "group": "face",
+                    "side": "left",
+                    "bbox": {"x": 294, "y": 190, "width": 62, "height": 24},
+                    "polygon": [
+                        {"x": 296, "y": 194},
+                        {"x": 354, "y": 194},
+                        {"x": 354, "y": 214},
+                        {"x": 296, "y": 214},
+                    ],
+                    "confidence": 0.95,
+                },
+                {
+                    "name": "left_iris",
+                    "group": "face",
+                    "side": "left",
+                    "bbox": {"x": 316, "y": 196, "width": 20, "height": 20},
+                    "polygon": [
+                        {"x": 316, "y": 196},
+                        {"x": 336, "y": 196},
+                        {"x": 336, "y": 216},
+                        {"x": 316, "y": 216},
+                    ],
+                    "confidence": 0.94,
+                },
+                {
+                    "name": "left_eye_highlight",
+                    "group": "face",
+                    "side": "left",
+                    "bbox": {"x": 322, "y": 200, "width": 8, "height": 8},
+                    "polygon": [
+                        {"x": 322, "y": 200},
+                        {"x": 330, "y": 200},
+                        {"x": 330, "y": 208},
+                        {"x": 322, "y": 208},
+                    ],
+                    "confidence": 0.92,
+                },
+            ]
+        }
+
+    monkeypatch.setenv("LIVE2D_PART_BACKEND", "api")
+    monkeypatch.setenv("LIVE2D_PART_API_URL", "https://example.invalid/parts")
+    monkeypatch.setattr(APIPartDetectionBackend, "_default_transport", fake_transport)
+
+    analyze_result = await analyze_photo(str(sample_image_path))
+    assert analyze_result["status"] == "success"
+    session_id = analyze_result["session_id"]
+
+    try:
+        layers_result = await generate_layers(session_id, str(tmp_path / "quality_layers"))
+        assert layers_result["status"] == "success"
+
+        eye_white_stats = _layer_stats(_part_by_name(layers_result["layers"], "left_eye_white"))
+        iris_stats = _layer_stats(_part_by_name(layers_result["layers"], "left_iris"))
+        highlight_stats = _layer_stats(_part_by_name(layers_result["layers"], "left_eye_highlight"))
+
+        assert 0.25 <= eye_white_stats["occupancy"] <= 0.95
+        assert eye_white_stats["mean_gray"] >= 235.0
+
+        assert 0.20 <= iris_stats["occupancy"] <= 0.90
+        assert iris_stats["mean_b"] > iris_stats["mean_r"] + 25.0
+        assert iris_stats["mean_b"] > iris_stats["mean_g"] + 15.0
+        assert iris_stats["mean_gray"] < eye_white_stats["mean_gray"] - 60.0
+
+        assert 0.08 <= highlight_stats["occupancy"] <= 0.85
+        assert highlight_stats["mean_gray"] >= 235.0
+        assert highlight_stats["mean_gray"] > iris_stats["mean_gray"] + 80.0
     finally:
         await close_session(session_id)
