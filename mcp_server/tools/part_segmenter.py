@@ -29,17 +29,29 @@ class PartSegmenter:
             "face_base": 50,
             "left_eyebrow": 60,
             "right_eyebrow": 61,
-            "left_eye": 62,
-            "right_eye": 63,
-            "nose": 64,
-            "mouth": 65,
-            "hair_side_left": 70,
-            "hair_side_right": 71,
-            "hair_front": 72,
+            "left_eye_white": 62,
+            "left_iris": 63,
+            "left_eye_highlight": 64,
+            "left_eye": 65,
+            "right_eye_white": 66,
+            "right_iris": 67,
+            "right_eye_highlight": 68,
+            "right_eye": 69,
+            "nose": 70,
+            "mouth": 71,
+            "hair_side_left": 72,
+            "hair_side_right": 73,
+            "hair_front": 74,
         }
         self._crop_padding = {
             "left_eye": (0.08, 0.12),
             "right_eye": (0.08, 0.12),
+            "left_eye_white": (0.06, 0.1),
+            "right_eye_white": (0.06, 0.1),
+            "left_iris": (0.04, 0.08),
+            "right_iris": (0.04, 0.08),
+            "left_eye_highlight": (0.03, 0.05),
+            "right_eye_highlight": (0.03, 0.05),
             "left_eyebrow": (0.08, 0.18),
             "right_eyebrow": (0.08, 0.18),
             "mouth": (0.12, 0.18),
@@ -148,7 +160,20 @@ class PartSegmenter:
         if polygon_mask is None:
             return cast(np.ndarray, color_mask if np.count_nonzero(color_mask) else alpha_mask)
 
-        if part.name in {"left_eye", "right_eye", "left_eyebrow", "right_eyebrow", "mouth", "nose"}:
+        if part.name in {
+            "left_eye",
+            "right_eye",
+            "left_eye_white",
+            "right_eye_white",
+            "left_iris",
+            "right_iris",
+            "left_eye_highlight",
+            "right_eye_highlight",
+            "left_eyebrow",
+            "right_eyebrow",
+            "mouth",
+            "nose",
+        }:
             guide_mask = cv2.dilate(polygon_mask, np.ones((3, 3), np.uint8), iterations=1)
             guided_color = ((color_mask > 0) & (guide_mask > 0)).astype(np.uint8)
             if np.count_nonzero(guided_color) >= 6:
@@ -202,11 +227,23 @@ class PartSegmenter:
 
         rgb = cv2.cvtColor(crop[:, :, :3], cv2.COLOR_RGB2BGR)
         gray = cv2.cvtColor(rgb, cv2.COLOR_BGR2GRAY)
-        if "eye" in part_name or "eyebrow" in part_name or part_name == "nose":
+        if "highlight" in part_name:
+            threshold = int(np.quantile(gray[alpha > 0], 0.8)) if np.count_nonzero(alpha) else 200
+            mask: np.ndarray = ((gray >= threshold) & (alpha > 0)).astype(np.uint8)
+        elif "iris" in part_name:
+            blue_strength = crop[:, :, 2].astype(np.int16) - crop[:, :, 1].astype(np.int16)
+            threshold = (
+                int(np.quantile(blue_strength[alpha > 0], 0.65)) if np.count_nonzero(alpha) else 10
+            )
+            mask = ((blue_strength >= threshold) & (alpha > 0)).astype(np.uint8)
+        elif "eye_white" in part_name:
+            threshold = int(np.quantile(gray[alpha > 0], 0.7)) if np.count_nonzero(alpha) else 180
+            mask = ((gray >= threshold) & (alpha > 0)).astype(np.uint8)
+        elif "eye" in part_name or "eyebrow" in part_name or part_name == "nose":
             threshold = (
                 max(10, int(np.quantile(gray[alpha > 0], 0.25))) if np.count_nonzero(alpha) else 60
             )
-            mask: np.ndarray = ((gray <= threshold) & (alpha > 0)).astype(np.uint8)
+            mask = ((gray <= threshold) & (alpha > 0)).astype(np.uint8)
         elif part_name == "mouth":
             red_strength = crop[:, :, 0].astype(np.int16) - crop[:, :, 1].astype(np.int16)
             threshold = (
