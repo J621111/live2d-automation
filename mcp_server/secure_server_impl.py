@@ -605,6 +605,7 @@ async def _generate_layers_impl(session_id: str, output_dir: Path) -> dict[str, 
         state["ai_part_layers"] = ai_layers
         state["layers"] = ai_layers
         state["layer_generation_metadata"] = {
+            "backend_used": ai_result.get("backend_used"),
             "detector_used": ai_result.get("detector_used"),
             "fallback_reason": ai_result.get("fallback_reason"),
             "confidence_summary": ai_result.get("confidence_summary"),
@@ -616,6 +617,7 @@ async def _generate_layers_impl(session_id: str, output_dir: Path) -> dict[str, 
             "layers_generated": len(ai_layers),
             "layers": ai_layers,
             "face_layers_extracted": len(face_layers),
+            "backend_used": ai_result.get("backend_used"),
             "detector_used": ai_result.get("detector_used"),
             "fallback_reason": ai_result.get("fallback_reason"),
             "confidence_summary": ai_result.get("confidence_summary"),
