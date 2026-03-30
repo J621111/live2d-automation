@@ -250,3 +250,63 @@ async def test_mcp_pipeline_can_use_api_backend_via_environment(
         assert segmented_left_eye["bounds"]["x"] >= 280
     finally:
         await close_session(session_id)
+
+
+@pytest.mark.asyncio
+async def test_generate_layers_can_use_api_backend_via_environment(
+    sample_image_path: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fake_transport(
+        self: APIPartDetectionBackend, _url: str, _payload: JsonDict, _headers: JsonDict
+    ) -> JsonDict:
+        return {
+            "parts": [
+                {
+                    "name": "left_eye",
+                    "group": "face",
+                    "side": "left",
+                    "bbox": {"x": 282, "y": 182, "width": 88, "height": 40},
+                    "polygon": [
+                        {"x": 284, "y": 190},
+                        {"x": 366, "y": 188},
+                        {"x": 358, "y": 222},
+                    ],
+                    "confidence": 0.98,
+                },
+                {
+                    "name": "right_eye",
+                    "group": "face",
+                    "side": "right",
+                    "bbox": {"x": 404, "y": 182, "width": 88, "height": 40},
+                    "polygon": [
+                        {"x": 406, "y": 190},
+                        {"x": 488, "y": 188},
+                        {"x": 480, "y": 222},
+                    ],
+                    "confidence": 0.98,
+                },
+            ]
+        }
+
+    monkeypatch.setenv("LIVE2D_PART_BACKEND", "api")
+    monkeypatch.setenv("LIVE2D_PART_API_URL", "https://example.invalid/parts")
+    monkeypatch.setattr(APIPartDetectionBackend, "_default_transport", fake_transport)
+
+    analyze_result = await analyze_photo(str(sample_image_path))
+    assert analyze_result["status"] == "success"
+    session_id = analyze_result["session_id"]
+
+    try:
+        layers_result = await generate_layers(session_id, str(tmp_path / "api_layers"))
+        assert layers_result["status"] == "success"
+        assert layers_result["backend_used"] == "api"
+        assert layers_result["detector_used"] == "hybrid_api_v1"
+
+        left_eye = _part_by_name(layers_result["layers"], "left_eye")
+        right_eye = _part_by_name(layers_result["layers"], "right_eye")
+        assert left_eye["bounds"]["x"] >= 282
+        assert right_eye["bounds"]["x"] >= 404
+    finally:
+        await close_session(session_id)
