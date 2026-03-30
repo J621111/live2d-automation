@@ -146,6 +146,42 @@ async def test_ai_part_detector_api_backend_uses_remote_keypoint_overrides(
                     "confidence": 0.97,
                 },
                 {
+                    "name": "left_eye_white",
+                    "group": "face",
+                    "side": "left",
+                    "bbox": {"x": 294, "y": 190, "width": 62, "height": 24},
+                    "polygon": [
+                        {"x": 296, "y": 194},
+                        {"x": 354, "y": 194},
+                        {"x": 350, "y": 212},
+                    ],
+                    "confidence": 0.95,
+                },
+                {
+                    "name": "left_iris",
+                    "group": "face",
+                    "side": "left",
+                    "bbox": {"x": 314, "y": 194, "width": 22, "height": 22},
+                    "polygon": [
+                        {"x": 316, "y": 196},
+                        {"x": 334, "y": 196},
+                        {"x": 334, "y": 214},
+                    ],
+                    "confidence": 0.94,
+                },
+                {
+                    "name": "left_eye_highlight",
+                    "group": "face",
+                    "side": "left",
+                    "bbox": {"x": 320, "y": 198, "width": 8, "height": 8},
+                    "polygon": [
+                        {"x": 321, "y": 199},
+                        {"x": 327, "y": 199},
+                        {"x": 327, "y": 205},
+                    ],
+                    "confidence": 0.92,
+                },
+                {
                     "name": "right_eye",
                     "group": "face",
                     "side": "right",
@@ -165,13 +201,24 @@ async def test_ai_part_detector_api_backend_uses_remote_keypoint_overrides(
 
     assert result["backend_used"] == "api"
     assert result["detector_used"] == "hybrid_api_v1"
-    assert result["api_metadata"]["refined_parts"] == ["left_eye", "right_eye"]
+    assert {
+        "left_eye",
+        "left_eye_white",
+        "left_iris",
+        "left_eye_highlight",
+        "right_eye",
+    }.issubset(set(result["api_metadata"]["refined_parts"]))
 
     left_eye = _part_by_name(result["parts"], "left_eye")
+    left_eye_white = _part_by_name(result["parts"], "left_eye_white")
+    left_iris = _part_by_name(result["parts"], "left_iris")
+    left_eye_highlight = _part_by_name(result["parts"], "left_eye_highlight")
     right_eye = _part_by_name(result["parts"], "right_eye")
     assert left_eye["bbox"]["x"] == 288
     assert right_eye["bbox"]["x"] == 404
-    assert left_eye["attributes"]["source"] == "api_backend"
+    assert left_eye_white["bbox"]["width"] < left_eye["bbox"]["width"]
+    assert left_iris["bbox"]["width"] < left_eye_white["bbox"]["width"]
+    assert left_eye_highlight["attributes"]["source"] == "api_backend"
 
 
 @pytest.mark.asyncio
@@ -276,6 +323,42 @@ async def test_generate_layers_can_use_api_backend_via_environment(
                     "confidence": 0.98,
                 },
                 {
+                    "name": "left_eye_white",
+                    "group": "face",
+                    "side": "left",
+                    "bbox": {"x": 292, "y": 190, "width": 60, "height": 24},
+                    "polygon": [
+                        {"x": 294, "y": 194},
+                        {"x": 350, "y": 194},
+                        {"x": 346, "y": 212},
+                    ],
+                    "confidence": 0.95,
+                },
+                {
+                    "name": "left_iris",
+                    "group": "face",
+                    "side": "left",
+                    "bbox": {"x": 312, "y": 194, "width": 22, "height": 22},
+                    "polygon": [
+                        {"x": 314, "y": 196},
+                        {"x": 332, "y": 196},
+                        {"x": 332, "y": 214},
+                    ],
+                    "confidence": 0.94,
+                },
+                {
+                    "name": "left_eye_highlight",
+                    "group": "face",
+                    "side": "left",
+                    "bbox": {"x": 320, "y": 198, "width": 8, "height": 8},
+                    "polygon": [
+                        {"x": 321, "y": 199},
+                        {"x": 327, "y": 199},
+                        {"x": 327, "y": 205},
+                    ],
+                    "confidence": 0.92,
+                },
+                {
                     "name": "right_eye",
                     "group": "face",
                     "side": "right",
@@ -305,8 +388,14 @@ async def test_generate_layers_can_use_api_backend_via_environment(
         assert layers_result["detector_used"] == "hybrid_api_v1"
 
         left_eye = _part_by_name(layers_result["layers"], "left_eye")
+        left_eye_white = _part_by_name(layers_result["layers"], "left_eye_white")
+        left_iris = _part_by_name(layers_result["layers"], "left_iris")
+        left_eye_highlight = _part_by_name(layers_result["layers"], "left_eye_highlight")
         right_eye = _part_by_name(layers_result["layers"], "right_eye")
         assert left_eye["bounds"]["x"] >= 282
         assert right_eye["bounds"]["x"] >= 404
+        assert left_eye_white["bounds"]["width"] < left_eye["bounds"]["width"]
+        assert left_iris["bounds"]["width"] <= left_eye_white["bounds"]["width"]
+        assert left_eye_highlight["bounds"]["width"] <= left_iris["bounds"]["width"]
     finally:
         await close_session(session_id)
