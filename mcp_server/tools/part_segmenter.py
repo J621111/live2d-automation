@@ -37,6 +37,14 @@ class PartSegmenter:
             "hair_side_right": 71,
             "hair_front": 72,
         }
+        self._crop_padding = {
+            "left_eye": (0.08, 0.12),
+            "right_eye": (0.08, 0.12),
+            "left_eyebrow": (0.08, 0.18),
+            "right_eyebrow": (0.08, 0.18),
+            "mouth": (0.12, 0.18),
+            "nose": (0.1, 0.15),
+        }
 
     async def segment(
         self,
@@ -84,9 +92,9 @@ class PartSegmenter:
         if np.count_nonzero(alpha) == 0:
             return None
 
-        mask = self._mask_from_polygon(part, crop.shape[1], crop.shape[0])
-        if mask is None:
-            mask = self._foreground_mask(crop, part.name)
+        polygon_mask = self._mask_from_polygon(part, crop.shape[1], crop.shape[0])
+        color_mask = self._foreground_mask(crop, part.name)
+        mask = self._refine_mask(crop, part, polygon_mask, color_mask)
         if np.count_nonzero(mask) == 0:
             mask = (alpha > 0).astype(np.uint8)
 
@@ -98,6 +106,9 @@ class PartSegmenter:
         max_x = int(xs.max()) + 1
         min_y = int(ys.min())
         max_y = int(ys.max()) + 1
+        min_x, max_x, min_y, max_y = self._expand_trim_bounds(
+            part.name, min_x, max_x, min_y, max_y, crop.shape[1], crop.shape[0]
+        )
         trimmed = crop[min_y:max_y, min_x:max_x].copy()
         trimmed_mask: np.ndarray = mask[min_y:max_y, min_x:max_x] * 255
         trimmed[:, :, 3] = trimmed_mask
@@ -124,6 +135,49 @@ class PartSegmenter:
             confidence=part.confidence,
             detector=part.detector,
             metadata={"occluded": part.occluded, "attributes": dict(part.attributes)},
+        )
+
+    def _refine_mask(
+        self,
+        crop: np.ndarray,
+        part: DetectedPart,
+        polygon_mask: np.ndarray | None,
+        color_mask: np.ndarray,
+    ) -> np.ndarray:
+        alpha_mask = (crop[:, :, 3] > 0).astype(np.uint8)
+        if polygon_mask is None:
+            return cast(np.ndarray, color_mask if np.count_nonzero(color_mask) else alpha_mask)
+
+        if part.name in {"left_eye", "right_eye", "left_eyebrow", "right_eyebrow", "mouth", "nose"}:
+            guide_mask = cv2.dilate(polygon_mask, np.ones((3, 3), np.uint8), iterations=1)
+            guided_color = ((color_mask > 0) & (guide_mask > 0)).astype(np.uint8)
+            if np.count_nonzero(guided_color) >= 6:
+                return cast(np.ndarray, guided_color)
+            return cast(np.ndarray, guide_mask)
+
+        merged = ((polygon_mask > 0) & (alpha_mask > 0)).astype(np.uint8)
+        if np.count_nonzero(merged) > 0:
+            return cast(np.ndarray, merged)
+        return cast(np.ndarray, alpha_mask)
+
+    def _expand_trim_bounds(
+        self,
+        part_name: str,
+        min_x: int,
+        max_x: int,
+        min_y: int,
+        max_y: int,
+        width: int,
+        height: int,
+    ) -> tuple[int, int, int, int]:
+        pad_x_ratio, pad_y_ratio = self._crop_padding.get(part_name, (0.04, 0.06))
+        pad_x = max(1, int((max_x - min_x) * pad_x_ratio))
+        pad_y = max(1, int((max_y - min_y) * pad_y_ratio))
+        return (
+            max(0, min_x - pad_x),
+            min(width, max_x + pad_x),
+            max(0, min_y - pad_y),
+            min(height, max_y + pad_y),
         )
 
     def _mask_from_polygon(self, part: DetectedPart, width: int, height: int) -> np.ndarray | None:
