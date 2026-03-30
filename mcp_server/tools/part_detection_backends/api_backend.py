@@ -28,11 +28,25 @@ class APIPartDetectionBackend(PartDetectionBackend):
     key_part_names = {
         "left_eye",
         "right_eye",
+        "left_eye_white",
+        "right_eye_white",
+        "left_iris",
+        "right_iris",
+        "left_eye_highlight",
+        "right_eye_highlight",
         "left_eyebrow",
         "right_eyebrow",
         "mouth",
         "nose",
         "hair_front",
+    }
+    fine_grained_face_parts = {
+        "left_eye_white",
+        "right_eye_white",
+        "left_iris",
+        "right_iris",
+        "left_eye_highlight",
+        "right_eye_highlight",
     }
 
     def __init__(
@@ -112,10 +126,11 @@ class APIPartDetectionBackend(PartDetectionBackend):
             "model": self.model,
             "image_base64": encoded,
             "instructions": (
-                "Locate left_eye, right_eye, left_eyebrow, right_eyebrow, "
-                "mouth, nose, and hair_front. Return strict JSON with "
-                "parts[]. Each part needs name, bbox{x,y,width,height}, "
-                "optional polygon, confidence, and side."
+                "Locate left_eye, right_eye, left_eye_white, right_eye_white, "
+                "left_iris, right_iris, left_eye_highlight, right_eye_highlight, "
+                "left_eyebrow, right_eyebrow, mouth, nose, and hair_front. "
+                "Return strict JSON with parts[]. Each part needs name, "
+                "bbox{x,y,width,height}, optional polygon, confidence, and side."
             ),
             "fallback_parts": [
                 part
@@ -162,7 +177,17 @@ class APIPartDetectionBackend(PartDetectionBackend):
             parsed.append(
                 DetectedPart(
                     name=name,
-                    group=str(item.get("group", "face" if name in self.key_part_names else "body")),
+                    group=str(
+                        item.get(
+                            "group",
+                            (
+                                "face"
+                                if name in self.key_part_names
+                                or name in self.fine_grained_face_parts
+                                else "body"
+                            ),
+                        )
+                    ),
                     side=str(item.get("side")) if item.get("side") in {"left", "right"} else None,
                     bbox=BoundingBox(
                         x=int(bbox.get("x", 0)),
