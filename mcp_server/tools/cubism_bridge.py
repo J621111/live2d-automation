@@ -54,6 +54,7 @@ class CubismBridge:
         template_id: str,
         model_name: str,
         editor_info: JsonDict,
+        automation_backend: str,
     ) -> JsonDict:
         plan_steps = [
             {
@@ -93,6 +94,7 @@ class CubismBridge:
             "status": "ready" if editor_info.get("status") == "available" else "blocked",
             "editor": editor_info,
             "steps": plan_steps,
+            "automation_backend": automation_backend,
             "automation_mode": "assisted",
         }
 
