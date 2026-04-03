@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import json
 from pathlib import Path
@@ -68,12 +68,18 @@ async def test_prepare_cubism_automation_writes_assisted_plan(
 
         assert prepare_result["status"] == "blocked"
         assert prepare_result["editor"]["status"] == "missing"
+        assert prepare_result["automation_backend"] == "native_gui"
+        assert prepare_result["automation_mode"] == "assisted"
+        assert prepare_result["missing_requirements"] == ["cubism_editor"]
         assert len(prepare_result["steps"]) == 5
         assert prepare_result["steps"][1]["action"] == "import_psd"
 
         plan_path = Path(prepare_result["plan_path"])
         assert plan_path.exists()
         assert "Stage3Plan" in plan_path.name
+        plan_data = json.loads(plan_path.read_text(encoding="utf-8"))
+        assert plan_data["automation_backend"] == "native_gui"
+        assert plan_data["execution"]["missing_requirements"] == ["cubism_editor"]
     finally:
         await close_session(session_id)
 
@@ -113,7 +119,96 @@ async def test_prepare_cubism_automation_accepts_explicit_editor_path(
 
         assert prepare_result["status"] == "ready"
         assert prepare_result["editor"]["status"] == "available"
+        assert prepare_result["automation_backend"] == "native_gui"
+        assert prepare_result["missing_requirements"] == []
         assert Path(prepare_result["editor"]["editor_path"]).name == "CubismEditor5.exe"
+    finally:
+        await close_session(session_id)
+
+
+@pytest.mark.asyncio
+async def test_prepare_cubism_automation_supports_opencli_backend(
+    sample_image_path: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fake_editor = tmp_path / "CubismEditor5.exe"
+    fake_editor.write_bytes(b"stub")
+    monkeypatch.setenv("OPENCLI_COMMAND", "opencli run cubism")
+
+    analyze_result = await analyze_photo(str(sample_image_path))
+    assert analyze_result["status"] == "success"
+    session_id = analyze_result["session_id"]
+
+    try:
+        assert (await generate_layers(session_id, str(tmp_path / "semantic_layers")))[
+            "status"
+        ] == "success"
+        assert (
+            await build_cubism_psd(
+                session_id,
+                str(tmp_path / "cubism_package"),
+                template_id="standard_bust_up",
+                model_name="Stage3OpenCLI",
+            )
+        )["status"] == "success"
+
+        prepare_result = await prepare_cubism_automation(
+            session_id,
+            str(tmp_path / "cubism_package"),
+            template_id="standard_bust_up",
+            model_name="Stage3OpenCLI",
+            editor_path=str(fake_editor),
+            automation_backend="opencli",
+        )
+
+        assert prepare_result["status"] == "ready"
+        assert prepare_result["automation_backend"] == "opencli"
+        assert prepare_result["automation_mode"] == "connector_assisted"
+        assert prepare_result["backend_capabilities"]
+        assert prepare_result["missing_requirements"] == []
+
+        plan_data = json.loads(Path(prepare_result["plan_path"]).read_text(encoding="utf-8"))
+        assert plan_data["automation_backend"] == "opencli"
+        assert plan_data["execution"]["command_hint"] == "opencli run cubism"
+        assert plan_data["execution"]["automation_mode"] == "connector_assisted"
+    finally:
+        await close_session(session_id)
+
+
+@pytest.mark.asyncio
+async def test_prepare_cubism_automation_rejects_unknown_backend(
+    sample_image_path: Path,
+    tmp_path: Path,
+) -> None:
+    analyze_result = await analyze_photo(str(sample_image_path))
+    assert analyze_result["status"] == "success"
+    session_id = analyze_result["session_id"]
+
+    try:
+        assert (await generate_layers(session_id, str(tmp_path / "semantic_layers")))[
+            "status"
+        ] == "success"
+        assert (
+            await build_cubism_psd(
+                session_id,
+                str(tmp_path / "cubism_package"),
+                template_id="standard_bust_up",
+                model_name="Stage3BadBackend",
+            )
+        )["status"] == "success"
+
+        prepare_result = await prepare_cubism_automation(
+            session_id,
+            str(tmp_path / "cubism_package"),
+            template_id="standard_bust_up",
+            model_name="Stage3BadBackend",
+            automation_backend="unknown_backend",
+        )
+
+        assert prepare_result["status"] == "error"
+        assert prepare_result["error_code"] == "invalid_input"
+        assert "unsupported automation backend" in prepare_result["message"].lower()
     finally:
         await close_session(session_id)
 
