@@ -26,6 +26,7 @@ if str(project_root) not in sys.path:
 from core.mesh_generator import ArtMeshGenerator
 from mcp_server.tools.ai_part_detector import AIPartDetector
 from mcp_server.tools.auto_rigger import AutoRigger
+from mcp_server.tools.cubism_automation import CubismAutomationManager
 from mcp_server.tools.cubism_bridge import CubismBridge
 from mcp_server.tools.export_validator import CubismExportValidator
 from mcp_server.tools.facial_detector import FacialFeatureDetector
@@ -526,6 +527,7 @@ async def _prepare_cubism_automation_impl(
     template_id: str,
     model_name: str,
     editor_path: str | None,
+    automation_backend: str | None,
 ) -> dict[str, Any]:
     state = _get_session_state(session_id)
     psd_path = state.get("cubism_psd_path")
@@ -538,6 +540,11 @@ async def _prepare_cubism_automation_impl(
             "The prepared Cubism PSD package is missing. Re-run build_cubism_psd before prepare_cubism_automation."
         )
 
+    manager = CubismAutomationManager()
+    try:
+        descriptor = manager.resolve_backend(automation_backend)
+    except ValueError as exc:
+        raise InputValidationError(str(exc)) from exc
     bridge = CubismBridge()
     editor_info = bridge.discover_editor(editor_path)
     plan = bridge.build_plan(
@@ -546,7 +553,16 @@ async def _prepare_cubism_automation_impl(
         template_id=template_id,
         model_name=model_name,
         editor_info=editor_info,
+        automation_backend=descriptor.name,
     )
+    execution = manager.prepare_execution(
+        descriptor.name,
+        editor_info=editor_info,
+        plan=plan,
+    )
+    plan["status"] = execution.get("status", plan.get("status", "blocked"))
+    plan["automation_mode"] = execution.get("automation_mode", plan.get("automation_mode"))
+    plan["execution"] = execution
     plan_path = bridge.write_plan(plan, str(output_dir), model_name)
     state["cubism_automation_plan"] = {**plan, "plan_path": plan_path}
     return {
@@ -554,12 +570,16 @@ async def _prepare_cubism_automation_impl(
         "session_id": session_id,
         "template_id": template_id,
         "editor": editor_info,
+        "automation_backend": descriptor.name,
+        "automation_mode": plan.get("automation_mode"),
+        "backend_capabilities": execution.get("capabilities", []),
+        "missing_requirements": execution.get("missing_requirements", []),
         "plan_path": plan_path,
         "steps": plan.get("steps", []),
         "message": (
-            "Cubism automation plan is ready."
+            f"Cubism automation plan is ready for backend '{descriptor.name}'."
             if plan.get("status") == "ready"
-            else "Cubism automation plan was created, but the editor executable was not found."
+            else f"Cubism automation plan was created for backend '{descriptor.name}', but required tools are missing."
         ),
     }
 
@@ -855,6 +875,7 @@ async def prepare_cubism_automation(
     template_id: str = "standard_bust_up",
     model_name: str = "ATRI",
     editor_path: str | None = None,
+    automation_backend: str | None = None,
 ) -> dict[str, Any]:
     try:
         resolved_output_dir = _resolve_output_dir(output_dir)
@@ -866,6 +887,7 @@ async def prepare_cubism_automation(
                 template_id,
                 safe_model_name,
                 editor_path,
+                automation_backend,
             )
     except InputValidationError as exc:
         logger.warning(f"Validation error in prepare_cubism_automation for {session_id}: {exc}")
