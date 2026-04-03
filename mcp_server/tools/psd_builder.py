@@ -1,4 +1,4 @@
-﻿"""Build Cubism-friendly PSD import packages from generated layers."""
+"""Build Cubism-friendly PSD import packages from generated layers."""
 
 from __future__ import annotations
 
@@ -24,10 +24,30 @@ class CubismPSDBuilder:
             height = max(height, int(bounds.get("y", 0)) + int(bounds.get("height", 1)))
         return width, height
 
-    def _group_name(self, target: str, fallback: str) -> str:
+    def _group_segments(self, target: str, fallback: str) -> list[str]:
         if "/" in target:
-            return target.split("/", 1)[0]
-        return fallback or "Ungrouped"
+            segments = [segment for segment in target.split("/")[:-1] if segment]
+            if segments:
+                return segments
+        if target:
+            return [target]
+        if fallback:
+            return [fallback]
+        return ["Ungrouped"]
+
+    def _ensure_group(self, psd: PSDImage, groups: dict[str, Any], group_path: list[str]) -> Any:
+        parent: Any = psd
+        traversed: list[str] = []
+        for segment in group_path:
+            traversed.append(segment)
+            key = "/".join(traversed)
+            group = groups.get(key)
+            if group is None:
+                group = psd.create_group(name=segment)
+                parent.append(group)
+                groups[key] = group
+            parent = group
+        return parent
 
     async def build(
         self,
@@ -56,10 +76,8 @@ class CubismPSDBuilder:
                 continue
             mapped = mapped_by_name.get(layer_name, {})
             target = str(mapped.get("target", layer.get("group", "Ungrouped")))
-            group_name = self._group_name(target, str(layer.get("group", "Ungrouped")))
-            if group_name not in groups:
-                groups[group_name] = psd.create_group(name=group_name)
-                psd.append(groups[group_name])
+            group_segments = self._group_segments(target, str(layer.get("group", "Ungrouped")))
+            parent_group = self._ensure_group(psd, groups, group_segments)
 
             with Image.open(layer_path).convert("RGBA") as image:
                 pixel_layer = psd.create_pixel_layer(
@@ -68,7 +86,7 @@ class CubismPSDBuilder:
                     top=int(dict(layer.get("bounds", {})).get("y", 0)),
                     left=int(dict(layer.get("bounds", {})).get("x", 0)),
                 )
-                groups[group_name].append(pixel_layer)
+                parent_group.append(pixel_layer)
                 preview.alpha_composite(
                     image,
                     (
@@ -81,7 +99,7 @@ class CubismPSDBuilder:
                 {
                     "name": layer_name,
                     "target": target,
-                    "group": group_name,
+                    "group": "/".join(group_segments),
                     "path": str(layer_path),
                     "bounds": layer.get("bounds", {}),
                     "z_order": int(layer.get("z_order", 0)),
