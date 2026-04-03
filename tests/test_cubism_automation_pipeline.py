@@ -127,14 +127,16 @@ async def test_prepare_cubism_automation_accepts_explicit_editor_path(
 
 
 @pytest.mark.asyncio
-async def test_prepare_cubism_automation_supports_opencli_backend(
+async def test_prepare_cubism_automation_supports_direct_opencli_backend(
     sample_image_path: Path,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     fake_editor = tmp_path / "CubismEditor5.exe"
     fake_editor.write_bytes(b"stub")
-    monkeypatch.setenv("OPENCLI_COMMAND", "opencli run cubism")
+    fake_opencli = tmp_path / "opencli.exe"
+    fake_opencli.write_bytes(b"stub")
+    monkeypatch.setenv("OPENCLI_COMMAND", f"{fake_opencli} run cubism")
 
     analyze_result = await analyze_photo(str(sample_image_path))
     assert analyze_result["status"] == "success"
@@ -170,8 +172,166 @@ async def test_prepare_cubism_automation_supports_opencli_backend(
 
         plan_data = json.loads(Path(prepare_result["plan_path"]).read_text(encoding="utf-8"))
         assert plan_data["automation_backend"] == "opencli"
-        assert plan_data["execution"]["command_hint"] == "opencli run cubism"
+        assert plan_data["execution"]["integration_target"] == "jackwener/opencli"
+        assert plan_data["execution"]["command_hint"] == f"{fake_opencli} run cubism"
+        assert plan_data["execution"]["resolved_executable"] == str(fake_opencli.resolve())
+        assert plan_data["execution"]["argv"][0] == str(fake_opencli)
+        assert plan_data["execution"]["invocation_prefix"] == [str(fake_opencli)]
+        assert plan_data["execution"]["preflight_commands"][0]["argv"] == [
+            str(fake_opencli),
+            "doctor",
+        ]
         assert plan_data["execution"]["automation_mode"] == "connector_assisted"
+    finally:
+        await close_session(session_id)
+
+
+@pytest.mark.asyncio
+async def test_prepare_cubism_automation_supports_wrapped_opencli_backend(
+    sample_image_path: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fake_editor = tmp_path / "CubismEditor5.exe"
+    fake_editor.write_bytes(b"stub")
+    fake_uvx = tmp_path / "uvx.exe"
+    fake_uvx.write_bytes(b"stub")
+    monkeypatch.setenv("OPENCLI_COMMAND", f"{fake_uvx} opencli run cubism")
+
+    analyze_result = await analyze_photo(str(sample_image_path))
+    assert analyze_result["status"] == "success"
+    session_id = analyze_result["session_id"]
+
+    try:
+        assert (await generate_layers(session_id, str(tmp_path / "semantic_layers")))[
+            "status"
+        ] == "success"
+        assert (
+            await build_cubism_psd(
+                session_id,
+                str(tmp_path / "cubism_package"),
+                template_id="standard_bust_up",
+                model_name="Stage3WrappedOpenCLI",
+            )
+        )["status"] == "success"
+
+        prepare_result = await prepare_cubism_automation(
+            session_id,
+            str(tmp_path / "cubism_package"),
+            template_id="standard_bust_up",
+            model_name="Stage3WrappedOpenCLI",
+            editor_path=str(fake_editor),
+            automation_backend="opencli",
+        )
+
+        assert prepare_result["status"] == "ready"
+        plan_data = json.loads(Path(prepare_result["plan_path"]).read_text(encoding="utf-8"))
+        assert plan_data["execution"]["resolved_executable"] == str(fake_uvx.resolve())
+        assert plan_data["execution"]["invocation_prefix"] == [str(fake_uvx), "opencli"]
+        assert plan_data["execution"]["preflight_commands"][1]["argv"] == [
+            str(fake_uvx),
+            "opencli",
+            "list",
+        ]
+    finally:
+        await close_session(session_id)
+
+
+@pytest.mark.asyncio
+async def test_prepare_cubism_automation_blocks_unresolvable_opencli_command(
+    sample_image_path: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fake_editor = tmp_path / "CubismEditor5.exe"
+    fake_editor.write_bytes(b"stub")
+    monkeypatch.setenv("OPENCLI_COMMAND", "missing-opencli-command run cubism")
+
+    analyze_result = await analyze_photo(str(sample_image_path))
+    assert analyze_result["status"] == "success"
+    session_id = analyze_result["session_id"]
+
+    try:
+        assert (await generate_layers(session_id, str(tmp_path / "semantic_layers")))[
+            "status"
+        ] == "success"
+        assert (
+            await build_cubism_psd(
+                session_id,
+                str(tmp_path / "cubism_package"),
+                template_id="standard_bust_up",
+                model_name="Stage3OpenCLIBlocked",
+            )
+        )["status"] == "success"
+
+        prepare_result = await prepare_cubism_automation(
+            session_id,
+            str(tmp_path / "cubism_package"),
+            template_id="standard_bust_up",
+            model_name="Stage3OpenCLIBlocked",
+            editor_path=str(fake_editor),
+            automation_backend="opencli",
+        )
+
+        assert prepare_result["status"] == "blocked"
+        assert prepare_result["automation_backend"] == "opencli"
+        assert prepare_result["missing_requirements"] == ["opencli_command"]
+
+        plan_data = json.loads(Path(prepare_result["plan_path"]).read_text(encoding="utf-8"))
+        assert plan_data["execution"]["resolved_executable"] is None
+        assert plan_data["execution"]["argv"][0] == "missing-opencli-command"
+        assert plan_data["execution"]["preflight_commands"] == []
+        assert plan_data["execution"]["warnings"]
+    finally:
+        await close_session(session_id)
+
+
+@pytest.mark.asyncio
+async def test_prepare_cubism_automation_blocks_non_opencli_wrapper(
+    sample_image_path: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fake_editor = tmp_path / "CubismEditor5.exe"
+    fake_editor.write_bytes(b"stub")
+    fake_uvx = tmp_path / "uvx.exe"
+    fake_uvx.write_bytes(b"stub")
+    monkeypatch.setenv("OPENCLI_COMMAND", f"{fake_uvx} not-opencli run cubism")
+
+    analyze_result = await analyze_photo(str(sample_image_path))
+    assert analyze_result["status"] == "success"
+    session_id = analyze_result["session_id"]
+
+    try:
+        assert (await generate_layers(session_id, str(tmp_path / "semantic_layers")))[
+            "status"
+        ] == "success"
+        assert (
+            await build_cubism_psd(
+                session_id,
+                str(tmp_path / "cubism_package"),
+                template_id="standard_bust_up",
+                model_name="Stage3OpenCLIMismatch",
+            )
+        )["status"] == "success"
+
+        prepare_result = await prepare_cubism_automation(
+            session_id,
+            str(tmp_path / "cubism_package"),
+            template_id="standard_bust_up",
+            model_name="Stage3OpenCLIMismatch",
+            editor_path=str(fake_editor),
+            automation_backend="opencli",
+        )
+
+        assert prepare_result["status"] == "blocked"
+        plan_data = json.loads(Path(prepare_result["plan_path"]).read_text(encoding="utf-8"))
+        assert plan_data["execution"]["resolved_executable"] == str(fake_uvx.resolve())
+        assert plan_data["execution"]["preflight_commands"] == []
+        assert any(
+            "wrapper must target the opencli package" in warning.lower()
+            for warning in plan_data["execution"]["warnings"]
+        )
     finally:
         await close_session(session_id)
 
