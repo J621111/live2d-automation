@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 import shlex
 import shutil
+import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -12,6 +13,8 @@ from typing import Any
 JsonDict = dict[str, Any]
 _ALLOWED_BACKENDS = {"native_gui", "opencli"}
 _OPENCLI_WRAPPERS = {"npx", "pnpm", "pnpx", "bunx", "uvx"}
+_OPENCLI_SUFFIXES = (".exe", ".cmd", ".bat")
+_PREFLIGHT_TIMEOUT_SECONDS = 5
 
 
 @dataclass(frozen=True)
@@ -43,7 +46,7 @@ class CubismAutomationManager:
             "opencli": BackendDescriptor(
                 name="opencli",
                 automation_mode="connector_assisted",
-                requirements=["cubism_editor", "opencli_command"],
+                requirements=["cubism_editor", "opencli_command", "opencli_runtime"],
                 capabilities=[
                     "app_connector_bridge",
                     "step_dispatch",
@@ -70,15 +73,22 @@ class CubismAutomationManager:
     def _parse_command(self, command_hint: str) -> list[str]:
         return [token for token in shlex.split(command_hint, posix=False) if token]
 
-    def _is_opencli_token(self, token: str) -> bool:
+    def _normalized_name(self, token: str) -> str:
         normalized = Path(token.strip('"')).name.lower()
-        stem = normalized.removesuffix(".exe")
-        return stem == "opencli" or stem.startswith("opencli-")
+        for suffix in _OPENCLI_SUFFIXES:
+            if normalized.endswith(suffix):
+                return normalized[: -len(suffix)]
+        return normalized
+
+    def _is_opencli_launcher_token(self, token: str) -> bool:
+        return self._normalized_name(token) == "opencli"
+
+    def _is_opencli_package_token(self, token: str) -> bool:
+        normalized = token.strip('"').lower()
+        return normalized == "opencli"
 
     def _is_wrapper_token(self, token: str) -> bool:
-        normalized = Path(token.strip('"')).name.lower()
-        stem = normalized.removesuffix(".exe")
-        return stem in _OPENCLI_WRAPPERS
+        return self._normalized_name(token) in _OPENCLI_WRAPPERS
 
     def _resolve_launcher(self, token: str) -> str | None:
         executable = token.strip('"')
@@ -89,10 +99,7 @@ class CubismAutomationManager:
                 resolved = str(candidate_path.resolve())
         return resolved
 
-    def _opencli_preflight_commands(
-        self,
-        invocation_prefix: list[str],
-    ) -> list[JsonDict]:
+    def _opencli_preflight_commands(self, invocation_prefix: list[str]) -> list[JsonDict]:
         return [
             {
                 "name": "doctor",
@@ -106,6 +113,60 @@ class CubismAutomationManager:
             },
         ]
 
+    def _run_preflight_commands(self, commands: list[JsonDict]) -> list[JsonDict]:
+        results: list[JsonDict] = []
+        for command in commands:
+            argv = [str(item) for item in command.get("argv", [])]
+            if not argv:
+                results.append(
+                    {
+                        "name": command.get("name"),
+                        "status": "skipped",
+                        "returncode": None,
+                        "stdout": "",
+                        "stderr": "Empty argv.",
+                    }
+                )
+                continue
+            try:
+                completed = subprocess.run(
+                    argv,
+                    capture_output=True,
+                    text=True,
+                    timeout=_PREFLIGHT_TIMEOUT_SECONDS,
+                    check=False,
+                )
+                results.append(
+                    {
+                        "name": command.get("name"),
+                        "status": "success" if completed.returncode == 0 else "error",
+                        "returncode": completed.returncode,
+                        "stdout": completed.stdout.strip(),
+                        "stderr": completed.stderr.strip(),
+                    }
+                )
+            except subprocess.TimeoutExpired:
+                results.append(
+                    {
+                        "name": command.get("name"),
+                        "status": "timeout",
+                        "returncode": None,
+                        "stdout": "",
+                        "stderr": "Command timed out during preflight.",
+                    }
+                )
+            except OSError as exc:
+                results.append(
+                    {
+                        "name": command.get("name"),
+                        "status": "error",
+                        "returncode": None,
+                        "stdout": "",
+                        "stderr": str(exc),
+                    }
+                )
+        return results
+
     def _resolve_opencli_command(self, command_hint: str | None) -> JsonDict:
         if not command_hint:
             return {
@@ -115,6 +176,7 @@ class CubismAutomationManager:
                 "resolved_executable": None,
                 "invocation_prefix": [],
                 "preflight_commands": [],
+                "preflight_results": [],
                 "validation_error": "OPENCLI_COMMAND is not configured.",
             }
 
@@ -127,6 +189,7 @@ class CubismAutomationManager:
                 "resolved_executable": None,
                 "invocation_prefix": [],
                 "preflight_commands": [],
+                "preflight_results": [],
                 "validation_error": "OPENCLI_COMMAND could not be parsed.",
             }
 
@@ -135,13 +198,14 @@ class CubismAutomationManager:
         invocation_prefix = [launcher]
         validation_error: str | None = None
 
-        if self._is_opencli_token(launcher):
+        if self._is_opencli_launcher_token(launcher):
             pass
         elif self._is_wrapper_token(launcher) and len(argv) >= 2:
             package_token = argv[1]
-            if not self._is_opencli_token(package_token):
+            if not self._is_opencli_package_token(package_token):
                 validation_error = (
-                    "OPENCLI_COMMAND wrapper must target the opencli package " "as the next token."
+                    "OPENCLI_COMMAND wrapper must target the exact opencli package "
+                    "as the next token."
                 )
             else:
                 invocation_prefix = argv[:2]
@@ -159,9 +223,20 @@ class CubismAutomationManager:
         elif validation_error is not None:
             status = "missing"
 
-        preflight_commands = (
-            self._opencli_preflight_commands(invocation_prefix) if status == "ready" else []
-        )
+        preflight_commands = []
+        preflight_results = []
+        if status == "ready":
+            preflight_commands = self._opencli_preflight_commands(invocation_prefix)
+            preflight_results = self._run_preflight_commands(preflight_commands)
+            failing = [
+                result for result in preflight_results if result.get("status") not in {"success"}
+            ]
+            if failing:
+                status = "missing"
+                if validation_error is None:
+                    failed_names = ", ".join(str(result.get("name")) for result in failing)
+                    validation_error = f"opencli preflight commands failed: {failed_names}."
+
         return {
             "status": status,
             "command_hint": command_hint,
@@ -169,6 +244,7 @@ class CubismAutomationManager:
             "resolved_executable": resolved_launcher,
             "invocation_prefix": invocation_prefix,
             "preflight_commands": preflight_commands,
+            "preflight_results": preflight_results,
             "validation_error": validation_error,
         }
 
@@ -188,8 +264,10 @@ class CubismAutomationManager:
         command_info: JsonDict | None = None
         if descriptor.name == "opencli":
             command_info = self._resolve_opencli_command(os.getenv("OPENCLI_COMMAND"))
-            if command_info.get("status") != "ready":
+            if command_info.get("resolved_executable") is None:
                 missing_requirements.append("opencli_command")
+            if command_info.get("status") != "ready":
+                missing_requirements.append("opencli_runtime")
             validation_error = command_info.get("validation_error")
             if validation_error:
                 warnings.append(str(validation_error))
@@ -200,7 +278,7 @@ class CubismAutomationManager:
             "backend": descriptor.name,
             "automation_mode": descriptor.automation_mode,
             "requirements": descriptor.requirements,
-            "missing_requirements": missing_requirements,
+            "missing_requirements": sorted(set(missing_requirements)),
             "capabilities": descriptor.capabilities,
             "env_vars": descriptor.env_vars,
             "warnings": warnings,
@@ -215,6 +293,9 @@ class CubismAutomationManager:
             ),
             "preflight_commands": (
                 command_info.get("preflight_commands", []) if command_info else []
+            ),
+            "preflight_results": (
+                command_info.get("preflight_results", []) if command_info else []
             ),
             "plan_actions": [step.get("action") for step in plan.get("steps", [])],
         }
