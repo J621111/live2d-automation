@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 
 import pytest
@@ -33,10 +34,18 @@ def _create_sample_character_image(path: Path) -> Path:
     return path
 
 
-def _write_batch_script(path: Path, lines: list[str]) -> Path:
-    script = "@echo off\n" + "\n".join(lines) + "\n"
-    path.write_text(script, encoding="utf-8")
-    return path
+def _write_command_script(path: Path, windows_lines: list[str], posix_lines: list[str]) -> Path:
+    if os.name == "nt":
+        script = "@echo off\n" + "\n".join(windows_lines) + "\n"
+        target = path.with_suffix(".cmd")
+        target.write_text(script, encoding="utf-8")
+        return target
+
+    script = "#!/usr/bin/env sh\nset -eu\n" + "\n".join(posix_lines) + "\n"
+    target = path.with_suffix("")
+    target.write_text(script, encoding="utf-8")
+    target.chmod(0o755)
+    return target
 
 
 @pytest.fixture
@@ -140,12 +149,17 @@ async def test_prepare_cubism_automation_supports_direct_opencli_backend(
 ) -> None:
     fake_editor = tmp_path / "CubismEditor5.exe"
     fake_editor.write_bytes(b"stub")
-    fake_opencli = _write_batch_script(
-        tmp_path / "opencli.cmd",
+    fake_opencli = _write_command_script(
+        tmp_path / "opencli",
         [
             'if /I "%1"=="doctor" exit /b 0',
             'if /I "%1"=="list" exit /b 0',
             "exit /b 1",
+        ],
+        [
+            'if [ "$1" = "doctor" ]; then exit 0; fi',
+            'if [ "$1" = "list" ]; then exit 0; fi',
+            "exit 1",
         ],
     )
     monkeypatch.setenv("OPENCLI_COMMAND", f"{fake_opencli} run cubism")
@@ -210,13 +224,19 @@ async def test_prepare_cubism_automation_supports_wrapped_opencli_backend(
 ) -> None:
     fake_editor = tmp_path / "CubismEditor5.exe"
     fake_editor.write_bytes(b"stub")
-    fake_uvx = _write_batch_script(
-        tmp_path / "uvx.cmd",
+    fake_uvx = _write_command_script(
+        tmp_path / "uvx",
         [
             'if /I not "%1"=="opencli" exit /b 2',
             'if /I "%2"=="doctor" exit /b 0',
             'if /I "%2"=="list" exit /b 0',
             "exit /b 1",
+        ],
+        [
+            'if [ "$1" != "opencli" ]; then exit 2; fi',
+            'if [ "$2" = "doctor" ]; then exit 0; fi',
+            'if [ "$2" = "list" ]; then exit 0; fi',
+            "exit 1",
         ],
     )
     monkeypatch.setenv("OPENCLI_COMMAND", f"{fake_uvx} opencli run cubism")
@@ -321,12 +341,17 @@ async def test_prepare_cubism_automation_blocks_non_opencli_wrapper(
 ) -> None:
     fake_editor = tmp_path / "CubismEditor5.exe"
     fake_editor.write_bytes(b"stub")
-    fake_uvx = _write_batch_script(
-        tmp_path / "uvx.cmd",
+    fake_uvx = _write_command_script(
+        tmp_path / "uvx",
         [
             'if /I "%1"=="doctor" exit /b 0',
             'if /I "%1"=="list" exit /b 0',
             "exit /b 1",
+        ],
+        [
+            'if [ "$1" = "doctor" ]; then exit 0; fi',
+            'if [ "$1" = "list" ]; then exit 0; fi',
+            "exit 1",
         ],
     )
     monkeypatch.setenv("OPENCLI_COMMAND", f"{fake_uvx} not-opencli run cubism")
@@ -377,12 +402,17 @@ async def test_prepare_cubism_automation_blocks_opencli_preflight_failures(
 ) -> None:
     fake_editor = tmp_path / "CubismEditor5.exe"
     fake_editor.write_bytes(b"stub")
-    fake_opencli = _write_batch_script(
-        tmp_path / "opencli.cmd",
+    fake_opencli = _write_command_script(
+        tmp_path / "opencli",
         [
             'if /I "%1"=="doctor" exit /b 0',
             'if /I "%1"=="list" exit /b 3',
             "exit /b 1",
+        ],
+        [
+            'if [ "$1" = "doctor" ]; then exit 0; fi',
+            'if [ "$1" = "list" ]; then exit 3; fi',
+            "exit 1",
         ],
     )
     monkeypatch.setenv("OPENCLI_COMMAND", str(fake_opencli))
