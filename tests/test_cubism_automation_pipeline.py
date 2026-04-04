@@ -33,6 +33,12 @@ def _create_sample_character_image(path: Path) -> Path:
     return path
 
 
+def _write_batch_script(path: Path, lines: list[str]) -> Path:
+    script = "@echo off\n" + "\n".join(lines) + "\n"
+    path.write_text(script, encoding="utf-8")
+    return path
+
+
 @pytest.fixture
 def sample_image_path(tmp_path: Path) -> Path:
     return _create_sample_character_image(tmp_path / "input_image" / "character.png")
@@ -134,8 +140,14 @@ async def test_prepare_cubism_automation_supports_direct_opencli_backend(
 ) -> None:
     fake_editor = tmp_path / "CubismEditor5.exe"
     fake_editor.write_bytes(b"stub")
-    fake_opencli = tmp_path / "opencli.exe"
-    fake_opencli.write_bytes(b"stub")
+    fake_opencli = _write_batch_script(
+        tmp_path / "opencli.cmd",
+        [
+            'if /I "%1"=="doctor" exit /b 0',
+            'if /I "%1"=="list" exit /b 0',
+            "exit /b 1",
+        ],
+    )
     monkeypatch.setenv("OPENCLI_COMMAND", f"{fake_opencli} run cubism")
 
     analyze_result = await analyze_photo(str(sample_image_path))
@@ -181,6 +193,10 @@ async def test_prepare_cubism_automation_supports_direct_opencli_backend(
             str(fake_opencli),
             "doctor",
         ]
+        assert [result["status"] for result in plan_data["execution"]["preflight_results"]] == [
+            "success",
+            "success",
+        ]
         assert plan_data["execution"]["automation_mode"] == "connector_assisted"
     finally:
         await close_session(session_id)
@@ -194,8 +210,15 @@ async def test_prepare_cubism_automation_supports_wrapped_opencli_backend(
 ) -> None:
     fake_editor = tmp_path / "CubismEditor5.exe"
     fake_editor.write_bytes(b"stub")
-    fake_uvx = tmp_path / "uvx.exe"
-    fake_uvx.write_bytes(b"stub")
+    fake_uvx = _write_batch_script(
+        tmp_path / "uvx.cmd",
+        [
+            'if /I not "%1"=="opencli" exit /b 2',
+            'if /I "%2"=="doctor" exit /b 0',
+            'if /I "%2"=="list" exit /b 0',
+            "exit /b 1",
+        ],
+    )
     monkeypatch.setenv("OPENCLI_COMMAND", f"{fake_uvx} opencli run cubism")
 
     analyze_result = await analyze_photo(str(sample_image_path))
@@ -232,6 +255,10 @@ async def test_prepare_cubism_automation_supports_wrapped_opencli_backend(
             str(fake_uvx),
             "opencli",
             "list",
+        ]
+        assert [result["status"] for result in plan_data["execution"]["preflight_results"]] == [
+            "success",
+            "success",
         ]
     finally:
         await close_session(session_id)
@@ -275,7 +302,7 @@ async def test_prepare_cubism_automation_blocks_unresolvable_opencli_command(
 
         assert prepare_result["status"] == "blocked"
         assert prepare_result["automation_backend"] == "opencli"
-        assert prepare_result["missing_requirements"] == ["opencli_command"]
+        assert prepare_result["missing_requirements"] == ["opencli_command", "opencli_runtime"]
 
         plan_data = json.loads(Path(prepare_result["plan_path"]).read_text(encoding="utf-8"))
         assert plan_data["execution"]["resolved_executable"] is None
@@ -294,8 +321,14 @@ async def test_prepare_cubism_automation_blocks_non_opencli_wrapper(
 ) -> None:
     fake_editor = tmp_path / "CubismEditor5.exe"
     fake_editor.write_bytes(b"stub")
-    fake_uvx = tmp_path / "uvx.exe"
-    fake_uvx.write_bytes(b"stub")
+    fake_uvx = _write_batch_script(
+        tmp_path / "uvx.cmd",
+        [
+            'if /I "%1"=="doctor" exit /b 0',
+            'if /I "%1"=="list" exit /b 0',
+            "exit /b 1",
+        ],
+    )
     monkeypatch.setenv("OPENCLI_COMMAND", f"{fake_uvx} not-opencli run cubism")
 
     analyze_result = await analyze_photo(str(sample_image_path))
@@ -329,7 +362,66 @@ async def test_prepare_cubism_automation_blocks_non_opencli_wrapper(
         assert plan_data["execution"]["resolved_executable"] == str(fake_uvx.resolve())
         assert plan_data["execution"]["preflight_commands"] == []
         assert any(
-            "wrapper must target the opencli package" in warning.lower()
+            "wrapper must target the exact opencli package" in warning.lower()
+            for warning in plan_data["execution"]["warnings"]
+        )
+    finally:
+        await close_session(session_id)
+
+
+@pytest.mark.asyncio
+async def test_prepare_cubism_automation_blocks_opencli_preflight_failures(
+    sample_image_path: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fake_editor = tmp_path / "CubismEditor5.exe"
+    fake_editor.write_bytes(b"stub")
+    fake_opencli = _write_batch_script(
+        tmp_path / "opencli.cmd",
+        [
+            'if /I "%1"=="doctor" exit /b 0',
+            'if /I "%1"=="list" exit /b 3',
+            "exit /b 1",
+        ],
+    )
+    monkeypatch.setenv("OPENCLI_COMMAND", str(fake_opencli))
+
+    analyze_result = await analyze_photo(str(sample_image_path))
+    assert analyze_result["status"] == "success"
+    session_id = analyze_result["session_id"]
+
+    try:
+        assert (await generate_layers(session_id, str(tmp_path / "semantic_layers")))[
+            "status"
+        ] == "success"
+        assert (
+            await build_cubism_psd(
+                session_id,
+                str(tmp_path / "cubism_package"),
+                template_id="standard_bust_up",
+                model_name="Stage3OpenCLIPreflightFail",
+            )
+        )["status"] == "success"
+
+        prepare_result = await prepare_cubism_automation(
+            session_id,
+            str(tmp_path / "cubism_package"),
+            template_id="standard_bust_up",
+            model_name="Stage3OpenCLIPreflightFail",
+            editor_path=str(fake_editor),
+            automation_backend="opencli",
+        )
+
+        assert prepare_result["status"] == "blocked"
+        assert prepare_result["missing_requirements"] == ["opencli_runtime"]
+
+        plan_data = json.loads(Path(prepare_result["plan_path"]).read_text(encoding="utf-8"))
+        results = {item["name"]: item for item in plan_data["execution"]["preflight_results"]}
+        assert results["doctor"]["status"] == "success"
+        assert results["list"]["status"] == "error"
+        assert any(
+            "preflight commands failed" in warning.lower()
             for warning in plan_data["execution"]["warnings"]
         )
     finally:
