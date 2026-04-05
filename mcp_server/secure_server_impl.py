@@ -122,6 +122,7 @@ def _empty_state() -> dict[str, Any]:
         "cubism_template_mapping": {},
         "cubism_psd_path": None,
         "cubism_automation_plan": {},
+        "cubism_dispatch_bundle": {},
     }
 
 
@@ -560,11 +561,24 @@ async def _prepare_cubism_automation_impl(
         editor_info=editor_info,
         plan=plan,
     )
+    dispatch_bundle = manager.build_dispatch_bundle(
+        descriptor.name,
+        plan=plan,
+        execution=execution,
+        template_id=template_id,
+        model_name=model_name,
+        psd_path=str(psd_path),
+        output_dir=str(output_dir),
+    )
     plan["status"] = execution.get("status", plan.get("status", "blocked"))
     plan["automation_mode"] = execution.get("automation_mode", plan.get("automation_mode"))
     plan["execution"] = execution
     plan_path = bridge.write_plan(plan, str(output_dir), model_name)
+    dispatch_bundle_path = manager.write_dispatch_bundle(
+        dispatch_bundle, str(output_dir), model_name
+    )
     state["cubism_automation_plan"] = {**plan, "plan_path": plan_path}
+    state["cubism_dispatch_bundle"] = {**dispatch_bundle, "bundle_path": dispatch_bundle_path}
     return {
         "status": plan.get("status", "blocked"),
         "session_id": session_id,
@@ -575,6 +589,7 @@ async def _prepare_cubism_automation_impl(
         "backend_capabilities": execution.get("capabilities", []),
         "missing_requirements": execution.get("missing_requirements", []),
         "plan_path": plan_path,
+        "dispatch_bundle_path": dispatch_bundle_path,
         "steps": plan.get("steps", []),
         "message": (
             f"Cubism automation plan is ready for backend '{descriptor.name}'."
