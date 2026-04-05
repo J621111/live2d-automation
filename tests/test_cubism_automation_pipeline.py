@@ -90,11 +90,16 @@ async def test_prepare_cubism_automation_writes_assisted_plan(
         assert prepare_result["steps"][1]["action"] == "import_psd"
 
         plan_path = Path(prepare_result["plan_path"])
+        dispatch_bundle_path = Path(prepare_result["dispatch_bundle_path"])
         assert plan_path.exists()
+        assert dispatch_bundle_path.exists()
         assert "Stage3Plan" in plan_path.name
         plan_data = json.loads(plan_path.read_text(encoding="utf-8"))
+        dispatch_data = json.loads(dispatch_bundle_path.read_text(encoding="utf-8"))
         assert plan_data["automation_backend"] == "native_gui"
         assert plan_data["execution"]["missing_requirements"] == ["cubism_editor"]
+        assert dispatch_data["backend"] == "native_gui"
+        assert dispatch_data["dispatch_steps"][0]["dispatch_kind"] == "desktop_intent"
     finally:
         await close_session(session_id)
 
@@ -197,6 +202,9 @@ async def test_prepare_cubism_automation_supports_direct_opencli_backend(
         assert prepare_result["missing_requirements"] == []
 
         plan_data = json.loads(Path(prepare_result["plan_path"]).read_text(encoding="utf-8"))
+        dispatch_data = json.loads(
+            Path(prepare_result["dispatch_bundle_path"]).read_text(encoding="utf-8")
+        )
         assert plan_data["automation_backend"] == "opencli"
         assert plan_data["execution"]["integration_target"] == "jackwener/opencli"
         assert plan_data["execution"]["command_hint"] == f"{fake_opencli} run cubism"
@@ -212,6 +220,10 @@ async def test_prepare_cubism_automation_supports_direct_opencli_backend(
             "success",
         ]
         assert plan_data["execution"]["automation_mode"] == "connector_assisted"
+        assert dispatch_data["backend"] == "opencli"
+        assert dispatch_data["ready_to_execute"] is True
+        assert dispatch_data["dispatch_steps"][0]["dispatch_kind"] == "connector_intent"
+        assert dispatch_data["dispatch_steps"][1]["intent"].lower().startswith("use opencli")
     finally:
         await close_session(session_id)
 
@@ -269,6 +281,7 @@ async def test_prepare_cubism_automation_supports_wrapped_opencli_backend(
 
         assert prepare_result["status"] == "ready"
         plan_data = json.loads(Path(prepare_result["plan_path"]).read_text(encoding="utf-8"))
+        assert Path(prepare_result["dispatch_bundle_path"]).exists()
         assert plan_data["execution"]["resolved_executable"] == str(fake_uvx.resolve())
         assert plan_data["execution"]["invocation_prefix"] == [str(fake_uvx), "opencli"]
         assert plan_data["execution"]["preflight_commands"][1]["argv"] == [
