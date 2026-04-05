@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import shlex
 import shutil
@@ -247,6 +248,90 @@ class CubismAutomationManager:
             "preflight_results": preflight_results,
             "validation_error": validation_error,
         }
+
+    def build_dispatch_bundle(
+        self,
+        backend_name: str,
+        *,
+        plan: JsonDict,
+        execution: JsonDict,
+        template_id: str,
+        model_name: str,
+        psd_path: str,
+        output_dir: str,
+    ) -> JsonDict:
+        descriptor = self.resolve_backend(backend_name)
+        dispatch_steps: list[JsonDict] = []
+        for step in plan.get("steps", []):
+            action = str(step.get("action", ""))
+            dispatch_steps.append(
+                {
+                    "step": int(step.get("step", len(dispatch_steps) + 1)),
+                    "source_action": action,
+                    "dispatch_kind": (
+                        "connector_intent" if descriptor.name == "opencli" else "desktop_intent"
+                    ),
+                    "target": "Cubism Editor",
+                    "intent": self._dispatch_intent_for(action, descriptor.name),
+                }
+            )
+
+        return {
+            "status": execution.get("status", "blocked"),
+            "backend": descriptor.name,
+            "automation_mode": descriptor.automation_mode,
+            "ready_to_execute": execution.get("status") == "ready",
+            "template_id": template_id,
+            "model_name": model_name,
+            "psd_path": psd_path,
+            "output_dir": output_dir,
+            "integration_target": execution.get("integration_target"),
+            "preflight": {
+                "commands": execution.get("preflight_commands", []),
+                "results": execution.get("preflight_results", []),
+            },
+            "dispatch_steps": dispatch_steps,
+            "warnings": execution.get("warnings", []),
+        }
+
+    def write_dispatch_bundle(self, bundle: JsonDict, output_dir: str, model_name: str) -> str:
+        output_path = Path(output_dir)
+        output_path.mkdir(parents=True, exist_ok=True)
+        bundle_path = output_path / f"{model_name}_cubism_dispatch_bundle.json"
+        bundle_path.write_text(
+            json.dumps(bundle, indent=2, ensure_ascii=False),
+            encoding="utf-8",
+        )
+        return str(bundle_path)
+
+    def _dispatch_intent_for(self, action: str, backend_name: str) -> str:
+        if backend_name == "opencli":
+            intents = {
+                "launch_editor": "Use opencli to bring Cubism Editor to the foreground.",
+                "import_psd": "Use opencli to import the prepared PSD into Cubism Editor.",
+                "apply_template": "Use opencli to apply the mapped Cubism template workflow.",
+                "export_embedded_data": (
+                    "Use opencli to export moc3/model3/textures from Cubism Editor."
+                ),
+                "validate_export_bundle": (
+                    "Return control to MCP validation after export completes."
+                ),
+            }
+        else:
+            intents = {
+                "launch_editor": (
+                    "Launch or focus Cubism Editor through the desktop automation backend."
+                ),
+                "import_psd": "Open the prepared PSD from the desktop automation backend.",
+                "apply_template": "Apply the mapped Cubism template using desktop automation.",
+                "export_embedded_data": (
+                    "Trigger Cubism embedded-data export through desktop automation."
+                ),
+                "validate_export_bundle": (
+                    "Return control to MCP validation after export completes."
+                ),
+            }
+        return intents.get(action, f"Handle '{action}' through the selected automation backend.")
 
     def prepare_execution(
         self,
