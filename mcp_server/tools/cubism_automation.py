@@ -16,6 +16,8 @@ _ALLOWED_BACKENDS = {"native_gui", "opencli"}
 _OPENCLI_WRAPPERS = {"npx", "pnpm", "pnpx", "bunx", "uvx"}
 _OPENCLI_SUFFIXES = (".exe", ".cmd", ".bat")
 _PREFLIGHT_TIMEOUT_SECONDS = 5
+_EXECUTION_TIMEOUT_SECONDS = 5
+_SCRIPT_SUFFIXES = {"", ".cmd", ".bat", ".sh", ".ps1"}
 
 
 @dataclass(frozen=True)
@@ -224,8 +226,8 @@ class CubismAutomationManager:
         elif validation_error is not None:
             status = "missing"
 
-        preflight_commands = []
-        preflight_results = []
+        preflight_commands: list[JsonDict] = []
+        preflight_results: list[JsonDict] = []
         if status == "ready":
             preflight_commands = self._opencli_preflight_commands(invocation_prefix)
             preflight_results = self._run_preflight_commands(preflight_commands)
@@ -259,6 +261,7 @@ class CubismAutomationManager:
         model_name: str,
         psd_path: str,
         output_dir: str,
+        editor_info: JsonDict,
     ) -> JsonDict:
         descriptor = self.resolve_backend(backend_name)
         dispatch_steps: list[JsonDict] = []
@@ -285,6 +288,7 @@ class CubismAutomationManager:
             "model_name": model_name,
             "psd_path": psd_path,
             "output_dir": output_dir,
+            "editor": editor_info,
             "integration_target": execution.get("integration_target"),
             "preflight": {
                 "commands": execution.get("preflight_commands", []),
@@ -292,6 +296,211 @@ class CubismAutomationManager:
             },
             "dispatch_steps": dispatch_steps,
             "warnings": execution.get("warnings", []),
+        }
+
+    def execute_dispatch_bundle(self, bundle: JsonDict) -> JsonDict:
+        backend = str(bundle.get("backend", "native_gui"))
+        descriptor = self.resolve_backend(backend)
+        if not bool(bundle.get("ready_to_execute", False)):
+            return {
+                "status": "blocked",
+                "backend": descriptor.name,
+                "executed_steps": [],
+                "artifacts": [],
+                "message": "Dispatch bundle is not ready_to_execute.",
+            }
+        if descriptor.name != "native_gui":
+            return {
+                "status": "blocked",
+                "backend": descriptor.name,
+                "executed_steps": [],
+                "artifacts": [],
+                "message": "Execution PoC currently supports only the native_gui backend.",
+            }
+
+        output_dir = Path(str(bundle.get("output_dir", ".")))
+        output_dir.mkdir(parents=True, exist_ok=True)
+        editor_info = dict(bundle.get("editor", {}))
+        editor_path = (
+            Path(str(editor_info.get("editor_path", "")))
+            if editor_info.get("editor_path")
+            else None
+        )
+        psd_path = Path(str(bundle.get("psd_path", ""))) if bundle.get("psd_path") else None
+
+        executed_steps: list[JsonDict] = []
+        artifacts: list[str] = []
+        for step in bundle.get("dispatch_steps", []):
+            action = str(step.get("source_action", ""))
+            if action == "launch_editor":
+                result = self._execute_native_launch(editor_path, output_dir)
+            elif action == "import_psd":
+                result = self._execute_native_import(psd_path, output_dir, bundle)
+            else:
+                result = {
+                    "step": step.get("step"),
+                    "source_action": action,
+                    "status": "pending",
+                    "details": "Execution PoC does not handle this step yet.",
+                }
+            executed_steps.append(result)
+            artifact_path = result.get("artifact_path")
+            if artifact_path:
+                artifacts.append(str(artifact_path))
+
+        failed = [step for step in executed_steps if step.get("status") == "error"]
+        recorded = [step for step in executed_steps if step.get("status") == "recorded"]
+        pending = [step for step in executed_steps if step.get("status") == "pending"]
+        if failed:
+            status = "error"
+        elif recorded or pending:
+            status = "partial"
+        else:
+            status = "success"
+        return {
+            "status": status,
+            "backend": descriptor.name,
+            "executed_steps": executed_steps,
+            "artifacts": artifacts,
+            "message": (
+                "Native GUI execution PoC completed."
+                if status == "success"
+                else (
+                    "Native GUI execution PoC produced partial execution records."
+                    if status == "partial"
+                    else "Native GUI execution PoC hit errors."
+                )
+            ),
+        }
+
+    def write_dispatch_execution(
+        self, execution: JsonDict, output_dir: str, model_name: str
+    ) -> str:
+        output_path = Path(output_dir)
+        output_path.mkdir(parents=True, exist_ok=True)
+        execution_path = output_path / f"{model_name}_cubism_dispatch_execution.json"
+        execution_path.write_text(
+            json.dumps(execution, indent=2, ensure_ascii=False), encoding="utf-8"
+        )
+        return str(execution_path)
+
+    def _execute_native_launch(self, editor_path: Path | None, output_dir: Path) -> JsonDict:
+        if editor_path is None or not editor_path.exists():
+            return {
+                "source_action": "launch_editor",
+                "status": "error",
+                "details": "Editor path is missing.",
+            }
+
+        script_like = editor_path.suffix.lower() in _SCRIPT_SUFFIXES
+        if not script_like and os.getenv("LIVE2D_NATIVE_GUI_ALLOW_BINARY_EXEC") != "1":
+            artifact_path = output_dir / "native_gui_launch_request.json"
+            artifact_path.write_text(
+                json.dumps(
+                    {
+                        "editor_path": str(editor_path),
+                        "mode": "record_only",
+                        "reason": "Binary launch is disabled for the execution PoC.",
+                    },
+                    indent=2,
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+            return {
+                "source_action": "launch_editor",
+                "status": "recorded",
+                "details": "Recorded a launch request without executing the binary.",
+                "artifact_path": str(artifact_path),
+            }
+
+        command = self._native_launch_command(editor_path)
+        try:
+            completed = subprocess.run(
+                command,
+                capture_output=True,
+                text=True,
+                timeout=_EXECUTION_TIMEOUT_SECONDS,
+                check=False,
+            )
+        except subprocess.TimeoutExpired:
+            return {
+                "source_action": "launch_editor",
+                "status": "error",
+                "details": "Editor launch timed out.",
+            }
+        except OSError as exc:
+            return {
+                "source_action": "launch_editor",
+                "status": "error",
+                "details": str(exc),
+            }
+
+        artifact_path = output_dir / "native_gui_launch_result.json"
+        artifact_path.write_text(
+            json.dumps(
+                {
+                    "command": command,
+                    "returncode": completed.returncode,
+                    "stdout": completed.stdout.strip(),
+                    "stderr": completed.stderr.strip(),
+                },
+                indent=2,
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
+        return {
+            "source_action": "launch_editor",
+            "status": "success" if completed.returncode == 0 else "error",
+            "details": "Executed launch command for the native GUI backend.",
+            "returncode": completed.returncode,
+            "artifact_path": str(artifact_path),
+        }
+
+    def _native_launch_command(self, editor_path: Path) -> list[str]:
+        suffix = editor_path.suffix.lower()
+        if suffix == ".ps1":
+            return [
+                "powershell",
+                "-NoProfile",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-File",
+                str(editor_path),
+            ]
+        return [str(editor_path)]
+
+    def _execute_native_import(
+        self, psd_path: Path | None, output_dir: Path, bundle: JsonDict
+    ) -> JsonDict:
+        if psd_path is None or not psd_path.exists():
+            return {
+                "source_action": "import_psd",
+                "status": "error",
+                "details": "PSD path is missing.",
+            }
+
+        artifact_path = output_dir / "native_gui_import_request.json"
+        artifact_path.write_text(
+            json.dumps(
+                {
+                    "psd_path": str(psd_path),
+                    "target": "Cubism Editor",
+                    "model_name": bundle.get("model_name"),
+                    "template_id": bundle.get("template_id"),
+                    "dispatch_kind": "desktop_intent",
+                },
+                indent=2,
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
+        return {
+            "source_action": "import_psd",
+            "status": "recorded",
+            "details": "Recorded a native GUI import request for the prepared PSD.",
+            "artifact_path": str(artifact_path),
         }
 
     def write_dispatch_bundle(self, bundle: JsonDict, output_dir: str, model_name: str) -> str:
