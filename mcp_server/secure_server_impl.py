@@ -123,6 +123,7 @@ def _empty_state() -> dict[str, Any]:
         "cubism_psd_path": None,
         "cubism_automation_plan": {},
         "cubism_dispatch_bundle": {},
+        "cubism_dispatch_execution": {},
     }
 
 
@@ -569,6 +570,7 @@ async def _prepare_cubism_automation_impl(
         model_name=model_name,
         psd_path=str(psd_path),
         output_dir=str(output_dir),
+        editor_info=editor_info,
     )
     plan["status"] = execution.get("status", plan.get("status", "blocked"))
     plan["automation_mode"] = execution.get("automation_mode", plan.get("automation_mode"))
@@ -596,6 +598,29 @@ async def _prepare_cubism_automation_impl(
             if plan.get("status") == "ready"
             else f"Cubism automation plan was created for backend '{descriptor.name}', but required tools are missing."
         ),
+    }
+
+
+async def _execute_cubism_dispatch_impl(session_id: str) -> dict[str, Any]:
+    state = _get_session_state(session_id)
+    bundle = dict(state.get("cubism_dispatch_bundle") or {})
+    if not bundle:
+        raise InputValidationError("Run prepare_cubism_automation before execute_cubism_dispatch.")
+
+    manager = CubismAutomationManager()
+    execution = manager.execute_dispatch_bundle(bundle)
+    output_dir = Path(str(bundle.get("output_dir", state.get("output_dir") or OUTPUT_ROOT)))
+    model_name = str(bundle.get("model_name", "ATRI"))
+    execution_path = manager.write_dispatch_execution(execution, str(output_dir), model_name)
+    state["cubism_dispatch_execution"] = {**execution, "execution_path": execution_path}
+    return {
+        "status": execution.get("status", "error"),
+        "session_id": session_id,
+        "automation_backend": bundle.get("backend"),
+        "execution_path": execution_path,
+        "executed_steps": execution.get("executed_steps", []),
+        "artifacts": execution.get("artifacts", []),
+        "message": execution.get("message", "Cubism dispatch execution finished."),
     }
 
 
@@ -918,6 +943,30 @@ async def prepare_cubism_automation(
         return _build_error_payload(
             error_code="cubism_automation_prepare_failed",
             message="Cubism automation planning failed. Check server logs for details.",
+            session_id=session_id,
+            partial_outputs=_partial_outputs(session_id),
+        )
+
+
+@mcp.tool()
+async def execute_cubism_dispatch(session_id: str) -> dict[str, Any]:
+    try:
+        with _session_operation(session_id):
+            return await _execute_cubism_dispatch_impl(session_id)
+    except InputValidationError as exc:
+        logger.warning(f"Validation error in execute_cubism_dispatch for {session_id}: {exc}")
+        return _build_error_payload(
+            error_code="invalid_input",
+            message=str(exc),
+            session_id=session_id,
+            validation_errors=[str(exc)],
+            partial_outputs=_partial_outputs(session_id),
+        )
+    except Exception:
+        logger.exception(f"Cubism dispatch execution failed for session {session_id}")
+        return _build_error_payload(
+            error_code="cubism_dispatch_execution_failed",
+            message="Cubism dispatch execution failed. Check server logs for details.",
             session_id=session_id,
             partial_outputs=_partial_outputs(session_id),
         )
