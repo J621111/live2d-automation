@@ -11,6 +11,7 @@ from mcp_server.secure_server_impl import (
     analyze_photo,
     build_cubism_psd,
     close_session,
+    execute_cubism_dispatch,
     export_model,
     generate_layers,
     prepare_cubism_automation,
@@ -142,6 +143,231 @@ async def test_prepare_cubism_automation_accepts_explicit_editor_path(
         assert prepare_result["automation_backend"] == "native_gui"
         assert prepare_result["missing_requirements"] == []
         assert Path(prepare_result["editor"]["editor_path"]).name == "CubismEditor5.exe"
+    finally:
+        await close_session(session_id)
+
+
+@pytest.mark.asyncio
+async def test_execute_cubism_dispatch_runs_native_gui_poc(
+    sample_image_path: Path,
+    tmp_path: Path,
+) -> None:
+    fake_editor = _write_command_script(
+        tmp_path / "CubismEditor5",
+        ["echo launched-native-gui", "exit /b 0"],
+        ["echo launched-native-gui", "exit 0"],
+    )
+
+    analyze_result = await analyze_photo(str(sample_image_path))
+    assert analyze_result["status"] == "success"
+    session_id = analyze_result["session_id"]
+
+    try:
+        assert (await generate_layers(session_id, str(tmp_path / "semantic_layers")))[
+            "status"
+        ] == "success"
+        assert (
+            await build_cubism_psd(
+                session_id,
+                str(tmp_path / "cubism_package"),
+                template_id="standard_bust_up",
+                model_name="Stage4NativeExec",
+            )
+        )["status"] == "success"
+        prepare_result = await prepare_cubism_automation(
+            session_id,
+            str(tmp_path / "cubism_package"),
+            template_id="standard_bust_up",
+            model_name="Stage4NativeExec",
+            editor_path=str(fake_editor),
+            automation_backend="native_gui",
+        )
+        assert prepare_result["status"] == "ready"
+
+        execute_result = await execute_cubism_dispatch(session_id)
+        assert execute_result["status"] == "partial"
+        assert Path(execute_result["execution_path"]).exists()
+        assert len(execute_result["executed_steps"]) >= 2
+        launch_step = next(
+            step
+            for step in execute_result["executed_steps"]
+            if step["source_action"] == "launch_editor"
+        )
+        import_step = next(
+            step
+            for step in execute_result["executed_steps"]
+            if step["source_action"] == "import_psd"
+        )
+        assert launch_step["status"] == "success"
+        assert import_step["status"] == "recorded"
+        assert Path(launch_step["artifact_path"]).exists()
+        assert Path(import_step["artifact_path"]).exists()
+
+        execution_data = json.loads(
+            Path(execute_result["execution_path"]).read_text(encoding="utf-8")
+        )
+        assert execution_data["backend"] == "native_gui"
+        assert execution_data["status"] == "partial"
+        assert execution_data["executed_steps"][0]["source_action"] == "launch_editor"
+    finally:
+        await close_session(session_id)
+
+
+@pytest.mark.asyncio
+async def test_execute_cubism_dispatch_records_binary_launch_request(
+    sample_image_path: Path,
+    tmp_path: Path,
+) -> None:
+    fake_editor = tmp_path / "CubismEditor5.exe"
+    fake_editor.write_bytes(b"stub")
+
+    analyze_result = await analyze_photo(str(sample_image_path))
+    assert analyze_result["status"] == "success"
+    session_id = analyze_result["session_id"]
+
+    try:
+        assert (await generate_layers(session_id, str(tmp_path / "semantic_layers")))[
+            "status"
+        ] == "success"
+        assert (
+            await build_cubism_psd(
+                session_id,
+                str(tmp_path / "cubism_package"),
+                template_id="standard_bust_up",
+                model_name="Stage4BinaryRecord",
+            )
+        )["status"] == "success"
+        prepare_result = await prepare_cubism_automation(
+            session_id,
+            str(tmp_path / "cubism_package"),
+            template_id="standard_bust_up",
+            model_name="Stage4BinaryRecord",
+            editor_path=str(fake_editor),
+            automation_backend="native_gui",
+        )
+        assert prepare_result["status"] == "ready"
+
+        execute_result = await execute_cubism_dispatch(session_id)
+        assert execute_result["status"] == "partial"
+        assert "partial execution records" in execute_result["message"].lower()
+        launch_step = next(
+            step
+            for step in execute_result["executed_steps"]
+            if step["source_action"] == "launch_editor"
+        )
+        import_step = next(
+            step
+            for step in execute_result["executed_steps"]
+            if step["source_action"] == "import_psd"
+        )
+        assert launch_step["status"] == "recorded"
+        assert import_step["status"] == "recorded"
+        assert Path(launch_step["artifact_path"]).name == "native_gui_launch_request.json"
+        assert Path(launch_step["artifact_path"]).exists()
+
+        execution_data = json.loads(
+            Path(execute_result["execution_path"]).read_text(encoding="utf-8")
+        )
+        assert execution_data["status"] == "partial"
+        launch_requests = [
+            step
+            for step in execution_data["executed_steps"]
+            if step["source_action"] == "launch_editor"
+        ]
+        assert launch_requests[0]["status"] == "recorded"
+    finally:
+        await close_session(session_id)
+
+
+@pytest.mark.asyncio
+async def test_execute_cubism_dispatch_blocks_not_ready_bundle(
+    sample_image_path: Path,
+    tmp_path: Path,
+) -> None:
+    analyze_result = await analyze_photo(str(sample_image_path))
+    assert analyze_result["status"] == "success"
+    session_id = analyze_result["session_id"]
+
+    try:
+        assert (await generate_layers(session_id, str(tmp_path / "semantic_layers")))[
+            "status"
+        ] == "success"
+        assert (
+            await build_cubism_psd(
+                session_id,
+                str(tmp_path / "cubism_package"),
+                template_id="standard_bust_up",
+                model_name="Stage4BlockedExec",
+            )
+        )["status"] == "success"
+        prepare_result = await prepare_cubism_automation(
+            session_id,
+            str(tmp_path / "cubism_package"),
+            template_id="standard_bust_up",
+            model_name="Stage4BlockedExec",
+            automation_backend="native_gui",
+        )
+        assert prepare_result["status"] == "blocked"
+
+        execute_result = await execute_cubism_dispatch(session_id)
+        assert execute_result["status"] == "blocked"
+        assert "not ready_to_execute" in execute_result["message"].lower()
+    finally:
+        await close_session(session_id)
+
+
+@pytest.mark.asyncio
+async def test_execute_cubism_dispatch_blocks_opencli_backend(
+    sample_image_path: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fake_editor = tmp_path / "CubismEditor5.exe"
+    fake_editor.write_bytes(b"stub")
+    fake_opencli = _write_command_script(
+        tmp_path / "opencli",
+        [
+            'if /I "%1"=="doctor" exit /b 0',
+            'if /I "%1"=="list" exit /b 0',
+            "exit /b 1",
+        ],
+        [
+            'if [ "$1" = "doctor" ]; then exit 0; fi',
+            'if [ "$1" = "list" ]; then exit 0; fi',
+            "exit 1",
+        ],
+    )
+    monkeypatch.setenv("OPENCLI_COMMAND", str(fake_opencli))
+
+    analyze_result = await analyze_photo(str(sample_image_path))
+    assert analyze_result["status"] == "success"
+    session_id = analyze_result["session_id"]
+
+    try:
+        assert (await generate_layers(session_id, str(tmp_path / "semantic_layers")))[
+            "status"
+        ] == "success"
+        assert (
+            await build_cubism_psd(
+                session_id,
+                str(tmp_path / "cubism_package"),
+                template_id="standard_bust_up",
+                model_name="Stage4OpenCLIExec",
+            )
+        )["status"] == "success"
+        prepare_result = await prepare_cubism_automation(
+            session_id,
+            str(tmp_path / "cubism_package"),
+            template_id="standard_bust_up",
+            model_name="Stage4OpenCLIExec",
+            editor_path=str(fake_editor),
+            automation_backend="opencli",
+        )
+        assert prepare_result["status"] == "ready"
+
+        execute_result = await execute_cubism_dispatch(session_id)
+        assert execute_result["status"] == "blocked"
+        assert "only the native_gui backend" in execute_result["message"].lower()
     finally:
         await close_session(session_id)
 
