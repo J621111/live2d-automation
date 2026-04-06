@@ -43,8 +43,9 @@ class CubismAutomationManager:
                     "menu_navigation",
                     "keyboard_shortcuts",
                     "dialog_handling",
+                    "adapter_hook",
                 ],
-                env_vars=[],
+                env_vars=["LIVE2D_NATIVE_GUI_ADAPTER_COMMAND"],
             ),
             "opencli": BackendDescriptor(
                 name="opencli",
@@ -170,6 +171,46 @@ class CubismAutomationManager:
                 )
         return results
 
+    def _resolve_native_adapter_command(self, command_hint: str | None) -> JsonDict:
+        if not command_hint:
+            return {
+                "status": "missing",
+                "command_hint": None,
+                "argv": [],
+                "resolved_executable": None,
+                "validation_error": None,
+            }
+
+        argv = self._parse_command(command_hint)
+        if not argv:
+            return {
+                "status": "missing",
+                "command_hint": command_hint,
+                "argv": [],
+                "resolved_executable": None,
+                "validation_error": "LIVE2D_NATIVE_GUI_ADAPTER_COMMAND could not be parsed.",
+            }
+
+        resolved_launcher = self._resolve_launcher(argv[0])
+        if resolved_launcher is None:
+            return {
+                "status": "missing",
+                "command_hint": command_hint,
+                "argv": argv,
+                "resolved_executable": None,
+                "validation_error": (
+                    "The configured native GUI adapter launcher could not be resolved."
+                ),
+            }
+
+        return {
+            "status": "ready",
+            "command_hint": command_hint,
+            "argv": argv,
+            "resolved_executable": resolved_launcher,
+            "validation_error": None,
+        }
+
     def _resolve_opencli_command(self, command_hint: str | None) -> JsonDict:
         if not command_hint:
             return {
@@ -290,6 +331,7 @@ class CubismAutomationManager:
             "output_dir": output_dir,
             "editor": editor_info,
             "integration_target": execution.get("integration_target"),
+            "native_adapter": execution.get("native_adapter"),
             "preflight": {
                 "commands": execution.get("preflight_commands", []),
                 "results": execution.get("preflight_results", []),
@@ -327,15 +369,18 @@ class CubismAutomationManager:
             else None
         )
         psd_path = Path(str(bundle.get("psd_path", ""))) if bundle.get("psd_path") else None
+        native_adapter = dict(bundle.get("native_adapter") or {})
 
         executed_steps: list[JsonDict] = []
         artifacts: list[str] = []
         for step in bundle.get("dispatch_steps", []):
             action = str(step.get("source_action", ""))
             if action == "launch_editor":
-                result = self._execute_native_launch(editor_path, output_dir)
+                result = self._execute_native_launch(
+                    editor_path, output_dir, native_adapter, bundle
+                )
             elif action == "import_psd":
-                result = self._execute_native_import(psd_path, output_dir, bundle)
+                result = self._execute_native_import(psd_path, output_dir, native_adapter, bundle)
             else:
                 result = {
                     "step": step.get("step"),
@@ -384,13 +429,30 @@ class CubismAutomationManager:
         )
         return str(execution_path)
 
-    def _execute_native_launch(self, editor_path: Path | None, output_dir: Path) -> JsonDict:
+    def _execute_native_launch(
+        self,
+        editor_path: Path | None,
+        output_dir: Path,
+        native_adapter: JsonDict,
+        bundle: JsonDict,
+    ) -> JsonDict:
         if editor_path is None or not editor_path.exists():
             return {
                 "source_action": "launch_editor",
                 "status": "error",
                 "details": "Editor path is missing.",
             }
+
+        adapter_result = self._execute_native_adapter_action(
+            native_adapter,
+            action="launch_editor",
+            output_dir=output_dir,
+            bundle=bundle,
+            editor_path=editor_path,
+            psd_path=None,
+        )
+        if adapter_result is not None:
+            return adapter_result
 
         script_like = editor_path.suffix.lower() in _SCRIPT_SUFFIXES
         if not script_like and os.getenv("LIVE2D_NATIVE_GUI_ALLOW_BINARY_EXEC") != "1":
@@ -472,7 +534,11 @@ class CubismAutomationManager:
         return [str(editor_path)]
 
     def _execute_native_import(
-        self, psd_path: Path | None, output_dir: Path, bundle: JsonDict
+        self,
+        psd_path: Path | None,
+        output_dir: Path,
+        native_adapter: JsonDict,
+        bundle: JsonDict,
     ) -> JsonDict:
         if psd_path is None or not psd_path.exists():
             return {
@@ -480,6 +546,23 @@ class CubismAutomationManager:
                 "status": "error",
                 "details": "PSD path is missing.",
             }
+
+        editor_info = dict(bundle.get("editor", {}))
+        editor_path = (
+            Path(str(editor_info.get("editor_path", "")))
+            if editor_info.get("editor_path")
+            else None
+        )
+        adapter_result = self._execute_native_adapter_action(
+            native_adapter,
+            action="import_psd",
+            output_dir=output_dir,
+            bundle=bundle,
+            editor_path=editor_path,
+            psd_path=psd_path,
+        )
+        if adapter_result is not None:
+            return adapter_result
 
         artifact_path = output_dir / "native_gui_import_request.json"
         artifact_path.write_text(
@@ -500,6 +583,82 @@ class CubismAutomationManager:
             "source_action": "import_psd",
             "status": "recorded",
             "details": "Recorded a native GUI import request for the prepared PSD.",
+            "artifact_path": str(artifact_path),
+        }
+
+    def _execute_native_adapter_action(
+        self,
+        native_adapter: JsonDict,
+        *,
+        action: str,
+        output_dir: Path,
+        bundle: JsonDict,
+        editor_path: Path | None,
+        psd_path: Path | None,
+    ) -> JsonDict | None:
+        if native_adapter.get("status") != "ready":
+            return None
+
+        argv = [str(item) for item in native_adapter.get("argv", [])]
+        if not argv:
+            return None
+
+        command = [
+            *argv,
+            action,
+            "--output-dir",
+            str(output_dir),
+            "--model-name",
+            str(bundle.get("model_name", "ATRI")),
+            "--template-id",
+            str(bundle.get("template_id", "")),
+        ]
+        if editor_path is not None:
+            command.extend(["--editor-path", str(editor_path)])
+        if psd_path is not None:
+            command.extend(["--psd-path", str(psd_path)])
+
+        try:
+            completed = subprocess.run(
+                command,
+                capture_output=True,
+                text=True,
+                timeout=_EXECUTION_TIMEOUT_SECONDS,
+                check=False,
+            )
+        except subprocess.TimeoutExpired:
+            return {
+                "source_action": action,
+                "status": "error",
+                "details": f"Native GUI adapter timed out while handling {action}.",
+            }
+        except OSError as exc:
+            return {
+                "source_action": action,
+                "status": "error",
+                "details": str(exc),
+            }
+
+        artifact_path = output_dir / f"native_gui_{action}_adapter_result.json"
+        artifact_path.write_text(
+            json.dumps(
+                {
+                    "command": command,
+                    "returncode": completed.returncode,
+                    "stdout": completed.stdout.strip(),
+                    "stderr": completed.stderr.strip(),
+                    "adapter": native_adapter,
+                },
+                indent=2,
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
+        return {
+            "source_action": action,
+            "status": "success" if completed.returncode == 0 else "error",
+            "details": f"Executed native GUI adapter for {action}.",
+            "returncode": completed.returncode,
             "artifact_path": str(artifact_path),
         }
 
@@ -556,6 +715,7 @@ class CubismAutomationManager:
             missing_requirements.append("cubism_editor")
 
         command_info: JsonDict | None = None
+        native_adapter: JsonDict | None = None
         if descriptor.name == "opencli":
             command_info = self._resolve_opencli_command(os.getenv("OPENCLI_COMMAND"))
             if command_info.get("resolved_executable") is None:
@@ -565,6 +725,18 @@ class CubismAutomationManager:
             validation_error = command_info.get("validation_error")
             if validation_error:
                 warnings.append(str(validation_error))
+        else:
+            native_adapter = self._resolve_native_adapter_command(
+                os.getenv("LIVE2D_NATIVE_GUI_ADAPTER_COMMAND")
+            )
+            validation_error = native_adapter.get("validation_error") if native_adapter else None
+            if validation_error:
+                warnings.append(str(validation_error))
+            if native_adapter and native_adapter.get("status") != "ready":
+                warnings.append(
+                    "Native GUI adapter is unavailable, so import/export "
+                    "steps stay in record-only mode."
+                )
 
         status = "ready" if not missing_requirements else "blocked"
         return {
@@ -591,5 +763,6 @@ class CubismAutomationManager:
             "preflight_results": (
                 command_info.get("preflight_results", []) if command_info else []
             ),
+            "native_adapter": native_adapter,
             "plan_actions": [step.get("action") for step in plan.get("steps", [])],
         }
