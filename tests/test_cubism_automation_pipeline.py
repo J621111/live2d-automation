@@ -214,6 +214,88 @@ async def test_execute_cubism_dispatch_runs_native_gui_poc(
 
 
 @pytest.mark.asyncio
+async def test_execute_cubism_dispatch_uses_native_adapter_for_launch_and_import(
+    sample_image_path: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fake_editor = tmp_path / "CubismEditor5.exe"
+    fake_editor.write_bytes(b"stub")
+    fake_adapter = _write_command_script(
+        tmp_path / "native_gui_adapter",
+        [
+            'if /I "%1"=="launch_editor" exit /b 0',
+            'if /I "%1"=="import_psd" exit /b 0',
+            "exit /b 1",
+        ],
+        [
+            'if [ "$1" = "launch_editor" ]; then exit 0; fi',
+            'if [ "$1" = "import_psd" ]; then exit 0; fi',
+            "exit 1",
+        ],
+    )
+    monkeypatch.setenv("LIVE2D_NATIVE_GUI_ADAPTER_COMMAND", str(fake_adapter))
+
+    analyze_result = await analyze_photo(str(sample_image_path))
+    assert analyze_result["status"] == "success"
+    session_id = analyze_result["session_id"]
+
+    try:
+        assert (await generate_layers(session_id, str(tmp_path / "semantic_layers")))[
+            "status"
+        ] == "success"
+        assert (
+            await build_cubism_psd(
+                session_id,
+                str(tmp_path / "cubism_package"),
+                template_id="standard_bust_up",
+                model_name="Stage4AdapterExec",
+            )
+        )["status"] == "success"
+        prepare_result = await prepare_cubism_automation(
+            session_id,
+            str(tmp_path / "cubism_package"),
+            template_id="standard_bust_up",
+            model_name="Stage4AdapterExec",
+            editor_path=str(fake_editor),
+            automation_backend="native_gui",
+        )
+        assert prepare_result["status"] == "ready"
+
+        execute_result = await execute_cubism_dispatch(session_id)
+        assert execute_result["status"] == "partial"
+        launch_step = next(
+            step
+            for step in execute_result["executed_steps"]
+            if step["source_action"] == "launch_editor"
+        )
+        import_step = next(
+            step
+            for step in execute_result["executed_steps"]
+            if step["source_action"] == "import_psd"
+        )
+        assert launch_step["status"] == "success"
+        assert import_step["status"] == "success"
+        assert (
+            Path(launch_step["artifact_path"]).name
+            == "native_gui_launch_editor_adapter_result.json"
+        )
+        assert (
+            Path(import_step["artifact_path"]).name == "native_gui_import_psd_adapter_result.json"
+        )
+        assert Path(launch_step["artifact_path"]).exists()
+        assert Path(import_step["artifact_path"]).exists()
+
+        execution_data = json.loads(
+            Path(execute_result["execution_path"]).read_text(encoding="utf-8")
+        )
+        assert execution_data["status"] == "partial"
+        assert execution_data["executed_steps"][0]["status"] == "success"
+    finally:
+        await close_session(session_id)
+
+
+@pytest.mark.asyncio
 async def test_execute_cubism_dispatch_records_binary_launch_request(
     sample_image_path: Path,
     tmp_path: Path,
