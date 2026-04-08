@@ -44,6 +44,21 @@ pip install -e ".[dev]"
 python -m mcp_server.server
 ```
 
+### Run the local CLI workflow
+
+```bash
+live2d-run run --image-path ATRI.png --output-dir output/ATRI --demo-adapter-mode full
+```
+
+Or without the console script:
+
+```bash
+python -m mcp_server.cli run --image-path ATRI.png --output-dir output/ATRI --demo-adapter-mode full
+```
+
+The CLI writes a `<model_name>_cli_report.json` file into the output directory.
+
+
 ### Run the full pipeline
 
 ```python
@@ -76,6 +91,25 @@ result = await full_pipeline(
 - input image formats: `png`, `jpg`, `jpeg`, `webp`
 - input image limits: 20 MiB, 4096x4096, 16,777,216 total pixels
 - supported motion types: `idle`, `tap`, `move`, `emotional`
+
+## Native GUI adapter
+
+The minimal Cubism execution PoC can call an external native GUI adapter through `LIVE2D_NATIVE_GUI_ADAPTER_COMMAND`. The adapter contract is documented in [docs/native_gui_adapter_contract.md](docs/native_gui_adapter_contract.md).
+
+In short:
+
+- MCP appends an action name such as `launch_editor`, `import_psd`, `apply_template`, or `export_embedded_data`
+- exit code `0` means success
+- exit code `64` means "unsupported, please fall back" for later PoC steps
+- other non-zero codes are treated as execution failures
+
+You can test the PoC with the bundled demo adapter:
+
+```bash
+set LIVE2D_NATIVE_GUI_ADAPTER_COMMAND=python scripts/native_gui_adapter_demo.py --mode partial
+```
+
+Use `--mode full` to let the demo adapter emit a minimal mock export bundle, or `--mode fail` to simulate hard adapter failures.
 
 ## Export notes
 
