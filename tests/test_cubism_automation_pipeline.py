@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 from pathlib import Path
 
 import pytest
@@ -32,6 +33,48 @@ def _create_sample_character_image(path: Path) -> Path:
     draw.arc((332, 248, 436, 314), start=15, end=165, fill=(180, 82, 102, 255), width=5)
     draw.rectangle((250, 118, 518, 164), fill=(34, 45, 92, 255))
     image.save(path, format="PNG")
+    return path
+
+
+def _write_python_adapter(path: Path) -> Path:
+    script = """import json
+import os
+import sys
+from pathlib import Path
+
+action = sys.argv[1]
+args = sys.argv[2:]
+parsed = {}
+index = 0
+while index < len(args):
+    key = args[index]
+    if key.startswith("--") and index + 1 < len(args):
+        parsed[key[2:]] = args[index + 1]
+        index += 2
+    else:
+        index += 1
+
+if action == "export_embedded_data":
+    output_dir = Path(parsed["output-dir"])
+    model_name = parsed["model-name"]
+    textures_dir = output_dir / "textures"
+    textures_dir.mkdir(parents=True, exist_ok=True)
+    (output_dir / f"{model_name}.moc3").write_bytes(b"moc")
+    (textures_dir / "texture_00.png").write_bytes(b"png")
+    (output_dir / "model3.json").write_text(
+        json.dumps({
+            "FileReferences": {
+                "Moc": f"{model_name}.moc3",
+                "Textures": ["textures/texture_00.png"],
+            }
+        }),
+        encoding="utf-8",
+    )
+
+supported_actions = {"launch_editor", "import_psd", "apply_template", "export_embedded_data"}
+sys.exit(0 if action in supported_actions else 1)
+"""
+    path.write_text(script, encoding="utf-8")
     return path
 
 
@@ -226,12 +269,12 @@ async def test_execute_cubism_dispatch_uses_native_adapter_for_launch_and_import
         [
             'if /I "%1"=="launch_editor" exit /b 0',
             'if /I "%1"=="import_psd" exit /b 0',
-            "exit /b 1",
+            "exit /b 64",
         ],
         [
             'if [ "$1" = "launch_editor" ]; then exit 0; fi',
             'if [ "$1" = "import_psd" ]; then exit 0; fi',
-            "exit 1",
+            "exit 64",
         ],
     )
     monkeypatch.setenv("LIVE2D_NATIVE_GUI_ADAPTER_COMMAND", str(fake_adapter))
@@ -291,6 +334,182 @@ async def test_execute_cubism_dispatch_uses_native_adapter_for_launch_and_import
         )
         assert execution_data["status"] == "partial"
         assert execution_data["executed_steps"][0]["status"] == "success"
+    finally:
+        await close_session(session_id)
+
+
+@pytest.mark.asyncio
+async def test_execute_cubism_dispatch_treats_adapter_failures_as_errors(
+    sample_image_path: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fake_editor = tmp_path / "CubismEditor5.exe"
+    fake_editor.write_bytes(b"stub")
+    failing_adapter = _write_command_script(
+        tmp_path / "native_gui_failing_adapter",
+        [
+            'if /I "%1"=="launch_editor" exit /b 0',
+            'if /I "%1"=="import_psd" exit /b 0',
+            'if /I "%1"=="apply_template" exit /b 2',
+            'if /I "%1"=="export_embedded_data" exit /b 2',
+            "exit /b 2",
+        ],
+        [
+            'if [ "$1" = "launch_editor" ]; then exit 0; fi',
+            'if [ "$1" = "import_psd" ]; then exit 0; fi',
+            'if [ "$1" = "apply_template" ]; then exit 2; fi',
+            'if [ "$1" = "export_embedded_data" ]; then exit 2; fi',
+            "exit 2",
+        ],
+    )
+    monkeypatch.setenv("LIVE2D_NATIVE_GUI_ADAPTER_COMMAND", str(failing_adapter))
+
+    analyze_result = await analyze_photo(str(sample_image_path))
+    assert analyze_result["status"] == "success"
+    session_id = analyze_result["session_id"]
+
+    try:
+        assert (await generate_layers(session_id, str(tmp_path / "semantic_layers")))[
+            "status"
+        ] == "success"
+        assert (
+            await build_cubism_psd(
+                session_id,
+                str(tmp_path / "cubism_package"),
+                template_id="standard_bust_up",
+                model_name="Stage4AdapterFailure",
+            )
+        )["status"] == "success"
+        prepare_result = await prepare_cubism_automation(
+            session_id,
+            str(tmp_path / "cubism_package"),
+            template_id="standard_bust_up",
+            model_name="Stage4AdapterFailure",
+            editor_path=str(fake_editor),
+            automation_backend="native_gui",
+        )
+        assert prepare_result["status"] == "ready"
+
+        execute_result = await execute_cubism_dispatch(session_id)
+        assert execute_result["status"] == "error"
+        apply_step = next(
+            step
+            for step in execute_result["executed_steps"]
+            if step["source_action"] == "apply_template"
+        )
+        assert apply_step["status"] == "error"
+    finally:
+        await close_session(session_id)
+
+
+@pytest.mark.asyncio
+async def test_execute_cubism_dispatch_with_bundled_demo_adapter(
+    sample_image_path: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fake_editor = tmp_path / "CubismEditor5.exe"
+    fake_editor.write_bytes(b"stub")
+    demo_adapter = Path(__file__).resolve().parents[1] / "scripts" / "native_gui_adapter_demo.py"
+    monkeypatch.setenv(
+        "LIVE2D_NATIVE_GUI_ADAPTER_COMMAND",
+        f'"{sys.executable}" "{demo_adapter}" --mode full',
+    )
+
+    analyze_result = await analyze_photo(str(sample_image_path))
+    assert analyze_result["status"] == "success"
+    session_id = analyze_result["session_id"]
+
+    try:
+        package_dir = tmp_path / "cubism_package"
+        assert (await generate_layers(session_id, str(tmp_path / "semantic_layers")))[
+            "status"
+        ] == "success"
+        assert (
+            await build_cubism_psd(
+                session_id,
+                str(package_dir),
+                template_id="standard_bust_up",
+                model_name="Stage4BundledDemo",
+            )
+        )["status"] == "success"
+        prepare_result = await prepare_cubism_automation(
+            session_id,
+            str(package_dir),
+            template_id="standard_bust_up",
+            model_name="Stage4BundledDemo",
+            editor_path=str(fake_editor),
+            automation_backend="native_gui",
+        )
+        assert prepare_result["status"] == "ready"
+
+        execute_result = await execute_cubism_dispatch(session_id)
+        assert execute_result["status"] == "success"
+        assert (package_dir / "Stage4BundledDemo.moc3").exists()
+        assert (package_dir / "model3.json").exists()
+        assert (package_dir / "textures" / "texture_00.png").exists()
+    finally:
+        await close_session(session_id)
+
+
+@pytest.mark.asyncio
+async def test_execute_cubism_dispatch_completes_adapter_backed_flow(
+    sample_image_path: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fake_editor = tmp_path / "CubismEditor5.exe"
+    fake_editor.write_bytes(b"stub")
+    adapter_path = _write_python_adapter(tmp_path / "native_gui_adapter.py")
+    monkeypatch.setenv(
+        "LIVE2D_NATIVE_GUI_ADAPTER_COMMAND",
+        f'"{sys.executable}" "{adapter_path}"',
+    )
+
+    analyze_result = await analyze_photo(str(sample_image_path))
+    assert analyze_result["status"] == "success"
+    session_id = analyze_result["session_id"]
+
+    try:
+        package_dir = tmp_path / "cubism_package"
+        assert (await generate_layers(session_id, str(tmp_path / "semantic_layers")))[
+            "status"
+        ] == "success"
+        assert (
+            await build_cubism_psd(
+                session_id,
+                str(package_dir),
+                template_id="standard_bust_up",
+                model_name="Stage4AdapterFull",
+            )
+        )["status"] == "success"
+        prepare_result = await prepare_cubism_automation(
+            session_id,
+            str(package_dir),
+            template_id="standard_bust_up",
+            model_name="Stage4AdapterFull",
+            editor_path=str(fake_editor),
+            automation_backend="native_gui",
+        )
+        assert prepare_result["status"] == "ready"
+
+        execute_result = await execute_cubism_dispatch(session_id)
+        assert execute_result["status"] == "success"
+        assert "completed" in execute_result["message"].lower()
+        step_statuses = {
+            step["source_action"]: step["status"] for step in execute_result["executed_steps"]
+        }
+        assert step_statuses == {
+            "launch_editor": "success",
+            "import_psd": "success",
+            "apply_template": "success",
+            "export_embedded_data": "success",
+            "validate_export_bundle": "success",
+        }
+        assert (package_dir / "Stage4AdapterFull.moc3").exists()
+        assert (package_dir / "model3.json").exists()
+        assert (package_dir / "textures" / "texture_00.png").exists()
     finally:
         await close_session(session_id)
 

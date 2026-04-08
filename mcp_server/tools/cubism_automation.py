@@ -11,12 +11,15 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from mcp_server.tools.export_validator import CubismExportValidator
+
 JsonDict = dict[str, Any]
 _ALLOWED_BACKENDS = {"native_gui", "opencli"}
 _OPENCLI_WRAPPERS = {"npx", "pnpm", "pnpx", "bunx", "uvx"}
 _OPENCLI_SUFFIXES = (".exe", ".cmd", ".bat")
 _PREFLIGHT_TIMEOUT_SECONDS = 5
 _EXECUTION_TIMEOUT_SECONDS = 5
+_NATIVE_ADAPTER_UNSUPPORTED_EXIT_CODE = 64
 _SCRIPT_SUFFIXES = {"", ".cmd", ".bat", ".sh", ".ps1"}
 
 
@@ -75,7 +78,7 @@ class CubismAutomationManager:
         return self._descriptors[normalized]
 
     def _parse_command(self, command_hint: str) -> list[str]:
-        return [token for token in shlex.split(command_hint, posix=False) if token]
+        return [token.strip("\"'") for token in shlex.split(command_hint, posix=False) if token]
 
     def _normalized_name(self, token: str) -> str:
         normalized = Path(token.strip('"')).name.lower()
@@ -373,6 +376,7 @@ class CubismAutomationManager:
 
         executed_steps: list[JsonDict] = []
         artifacts: list[str] = []
+        step_statuses: dict[str, str] = {}
         for step in bundle.get("dispatch_steps", []):
             action = str(step.get("source_action", ""))
             if action == "launch_editor":
@@ -381,6 +385,20 @@ class CubismAutomationManager:
                 )
             elif action == "import_psd":
                 result = self._execute_native_import(psd_path, output_dir, native_adapter, bundle)
+            elif action == "apply_template":
+                result = self._execute_native_apply_template(output_dir, native_adapter, bundle)
+            elif action == "export_embedded_data":
+                result = self._execute_native_export(output_dir, native_adapter, bundle)
+            elif action == "validate_export_bundle":
+                if step_statuses.get("export_embedded_data") != "success":
+                    result = {
+                        "step": step.get("step"),
+                        "source_action": action,
+                        "status": "pending",
+                        "details": "Validation is deferred until export_embedded_data succeeds.",
+                    }
+                else:
+                    result = self._execute_local_validation(output_dir, bundle)
             else:
                 result = {
                     "step": step.get("step"),
@@ -389,6 +407,7 @@ class CubismAutomationManager:
                     "details": "Execution PoC does not handle this step yet.",
                 }
             executed_steps.append(result)
+            step_statuses[action] = str(result.get("status", "pending"))
             artifact_path = result.get("artifact_path")
             if artifact_path:
                 artifacts.append(str(artifact_path))
@@ -595,6 +614,7 @@ class CubismAutomationManager:
         bundle: JsonDict,
         editor_path: Path | None,
         psd_path: Path | None,
+        fallback_on_nonzero: bool = False,
     ) -> JsonDict | None:
         if native_adapter.get("status") != "ready":
             return None
@@ -639,6 +659,9 @@ class CubismAutomationManager:
                 "details": str(exc),
             }
 
+        if completed.returncode == _NATIVE_ADAPTER_UNSUPPORTED_EXIT_CODE and fallback_on_nonzero:
+            return None
+
         artifact_path = output_dir / f"native_gui_{action}_adapter_result.json"
         artifact_path.write_text(
             json.dumps(
@@ -660,6 +683,103 @@ class CubismAutomationManager:
             "details": f"Executed native GUI adapter for {action}.",
             "returncode": completed.returncode,
             "artifact_path": str(artifact_path),
+        }
+
+    def _execute_native_apply_template(
+        self,
+        output_dir: Path,
+        native_adapter: JsonDict,
+        bundle: JsonDict,
+    ) -> JsonDict:
+        adapter_result = self._execute_native_adapter_action(
+            native_adapter,
+            action="apply_template",
+            output_dir=output_dir,
+            bundle=bundle,
+            editor_path=None,
+            psd_path=None,
+            fallback_on_nonzero=True,
+        )
+        if adapter_result is not None:
+            return adapter_result
+
+        artifact_path = output_dir / "native_gui_apply_template_request.json"
+        artifact_path.write_text(
+            json.dumps(
+                {
+                    "template_id": bundle.get("template_id"),
+                    "model_name": bundle.get("model_name"),
+                    "dispatch_kind": "desktop_intent",
+                },
+                indent=2,
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
+        return {
+            "source_action": "apply_template",
+            "status": "recorded",
+            "details": "Recorded a native GUI template-application request.",
+            "artifact_path": str(artifact_path),
+        }
+
+    def _execute_native_export(
+        self,
+        output_dir: Path,
+        native_adapter: JsonDict,
+        bundle: JsonDict,
+    ) -> JsonDict:
+        adapter_result = self._execute_native_adapter_action(
+            native_adapter,
+            action="export_embedded_data",
+            output_dir=output_dir,
+            bundle=bundle,
+            editor_path=None,
+            psd_path=None,
+            fallback_on_nonzero=True,
+        )
+        if adapter_result is not None:
+            return adapter_result
+
+        artifact_path = output_dir / "native_gui_export_request.json"
+        artifact_path.write_text(
+            json.dumps(
+                {
+                    "output_dir": str(output_dir),
+                    "model_name": bundle.get("model_name"),
+                    "dispatch_kind": "desktop_intent",
+                },
+                indent=2,
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
+        return {
+            "source_action": "export_embedded_data",
+            "status": "recorded",
+            "details": "Recorded a native GUI export request.",
+            "artifact_path": str(artifact_path),
+        }
+
+    def _execute_local_validation(self, output_dir: Path, bundle: JsonDict) -> JsonDict:
+        model_name = str(bundle.get("model_name", "ATRI"))
+        validator = CubismExportValidator()
+        result = validator.validate(str(output_dir), model_name)
+        artifact_path = output_dir / "native_gui_validate_export_result.json"
+        artifact_path.write_text(
+            json.dumps(result, indent=2, ensure_ascii=False),
+            encoding="utf-8",
+        )
+        return {
+            "source_action": "validate_export_bundle",
+            "status": "success" if result.get("status") == "success" else "error",
+            "details": (
+                "Validated the exported Cubism bundle."
+                if result.get("status") == "success"
+                else "Cubism export validation failed."
+            ),
+            "artifact_path": str(artifact_path),
+            "validation": result,
         }
 
     def write_dispatch_bundle(self, bundle: JsonDict, output_dir: str, model_name: str) -> str:
