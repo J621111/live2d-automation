@@ -46,6 +46,13 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     run_parser.add_argument("--adapter-command")
     run_parser.add_argument(
+        "--native-gui-controller-mode",
+        choices=["disabled", "dry_run", "execute"],
+        default="disabled",
+        help="Enable the built-in Windows GUI controller.",
+    )
+    run_parser.add_argument("--native-gui-profile")
+    run_parser.add_argument(
         "--demo-adapter-mode",
         choices=["partial", "full", "fail"],
         help="Use the bundled demo adapter with the selected mode.",
@@ -66,7 +73,12 @@ def _build_parser() -> argparse.ArgumentParser:
 def _apply_cli_environment(args: argparse.Namespace) -> dict[str, str | None]:
     previous = {
         "LIVE2D_NATIVE_GUI_ADAPTER_COMMAND": os.getenv("LIVE2D_NATIVE_GUI_ADAPTER_COMMAND"),
+        "LIVE2D_NATIVE_GUI_CONTROLLER_MODE": os.getenv("LIVE2D_NATIVE_GUI_CONTROLLER_MODE"),
+        "LIVE2D_NATIVE_GUI_PROFILE": os.getenv("LIVE2D_NATIVE_GUI_PROFILE"),
     }
+    os.environ["LIVE2D_NATIVE_GUI_CONTROLLER_MODE"] = args.native_gui_controller_mode
+    if args.native_gui_profile:
+        os.environ["LIVE2D_NATIVE_GUI_PROFILE"] = args.native_gui_profile
     if args.adapter_command:
         os.environ["LIVE2D_NATIVE_GUI_ADAPTER_COMMAND"] = args.adapter_command
     elif args.demo_adapter_mode:
@@ -119,6 +131,8 @@ async def _run_pipeline(args: argparse.Namespace) -> JsonDict:
         "template_id": args.template_id,
         "automation_backend": args.automation_backend,
         "demo_adapter_mode": args.demo_adapter_mode,
+        "native_gui_controller_mode": args.native_gui_controller_mode,
+        "native_gui_profile": args.native_gui_profile,
         "prepare_only": args.prepare_only,
         "skip_validate": args.skip_validate,
         "steps": {},

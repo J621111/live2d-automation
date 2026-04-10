@@ -111,6 +111,14 @@ set LIVE2D_NATIVE_GUI_ADAPTER_COMMAND=python scripts/native_gui_adapter_demo.py 
 
 Use `--mode full` to let the demo adapter emit a minimal mock export bundle, or `--mode fail` to simulate hard adapter failures.
 
+You can also enable the built-in Windows GUI controller for the first two steps:
+
+```bash
+live2d-run run --image-path ATRI.png --output-dir output/ATRI --editor-path "C:\Program Files\Live2D\Cubism5\Cubism Editor 5\CubismEditor5.exe" --native-gui-controller-mode dry_run
+```
+
+`dry_run` writes PowerShell scripts and receipts for `launch_editor` / `import_psd`; `execute` will attempt to run those scripts on Windows using the bundled profile.
+
 ## Export notes
 
 - The exporter writes a mock intermediate bundle, not a production-ready Live2D runtime model

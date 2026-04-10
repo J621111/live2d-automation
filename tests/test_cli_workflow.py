@@ -62,6 +62,43 @@ def test_cli_run_with_demo_adapter_full(tmp_path: Path) -> None:
     assert (output_dir / "textures" / "texture_00.png").exists()
 
 
+def test_cli_run_with_builtin_controller_dry_run(tmp_path: Path) -> None:
+    image_path = _create_sample_character_image(tmp_path / "input_image" / "character.png")
+    output_dir = tmp_path / "cli_builtin_output"
+    fake_editor = tmp_path / "CubismEditor5.exe"
+    fake_editor.write_bytes(b"stub")
+
+    completed = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "mcp_server.cli",
+            "run",
+            "--image-path",
+            str(image_path),
+            "--output-dir",
+            str(output_dir),
+            "--model-name",
+            "CLIBuiltin",
+            "--editor-path",
+            str(fake_editor),
+            "--native-gui-controller-mode",
+            "dry_run",
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert completed.returncode == 2, completed.stderr
+    payload = json.loads(completed.stdout.strip())
+    report_path = Path(payload["report_path"])
+    report = json.loads(report_path.read_text(encoding="utf-8"))
+    assert report["status"] == "partial"
+    assert (output_dir / "native_gui_builtin_launch.ps1").exists()
+    assert (output_dir / "native_gui_builtin_import.ps1").exists()
+
+
 def test_cli_run_with_demo_adapter_partial(tmp_path: Path) -> None:
     image_path = _create_sample_character_image(tmp_path / "input_image" / "character.png")
     output_dir = tmp_path / "cli_partial_output"
