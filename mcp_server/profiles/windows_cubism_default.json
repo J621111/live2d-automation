@@ -1,0 +1,8 @@
+﻿{
+  "profile_name": "windows_cubism_default",
+  "window_title_contains": "Cubism Editor",
+  "import_shortcut": "^o",
+  "launch_wait_seconds": 2.0,
+  "activation_wait_seconds": 1.0,
+  "dialog_wait_seconds": 0.8
+}
