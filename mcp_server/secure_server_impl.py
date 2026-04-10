@@ -620,7 +620,53 @@ async def _execute_cubism_dispatch_impl(session_id: str) -> dict[str, Any]:
         "execution_path": execution_path,
         "executed_steps": execution.get("executed_steps", []),
         "artifacts": execution.get("artifacts", []),
+        "resume": execution.get("resume", {}),
         "message": execution.get("message", "Cubism dispatch execution finished."),
+    }
+
+
+async def _resume_cubism_dispatch_impl(session_id: str) -> dict[str, Any]:
+    state = _get_session_state(session_id)
+    bundle = dict(state.get("cubism_dispatch_bundle") or {})
+    if not bundle:
+        raise InputValidationError("Run prepare_cubism_automation before resume_cubism_dispatch.")
+    previous_execution = dict(state.get("cubism_dispatch_execution") or {})
+    if not previous_execution:
+        raise InputValidationError("Run execute_cubism_dispatch before resume_cubism_dispatch.")
+
+    manager = CubismAutomationManager()
+    output_dir = Path(str(bundle.get("output_dir", state.get("output_dir") or OUTPUT_ROOT)))
+    refreshed_execution = manager.prepare_execution(
+        str(bundle.get("backend", "native_gui")),
+        editor_info=dict(bundle.get("editor", {})),
+        plan=dict(state.get("cubism_automation_plan") or {}),
+    )
+    bundle["native_controller"] = refreshed_execution.get("native_controller")
+    bundle["native_adapter"] = refreshed_execution.get("native_adapter")
+    bundle["preflight"] = {
+        "commands": refreshed_execution.get("preflight_commands", []),
+        "results": refreshed_execution.get("preflight_results", []),
+    }
+    execution = manager.execute_dispatch_bundle(
+        bundle, previous_execution=previous_execution, resume=True
+    )
+    model_name = str(bundle.get("model_name", "ATRI"))
+    execution_path = manager.write_dispatch_execution(
+        execution,
+        str(output_dir),
+        model_name,
+        suffix="_resume",
+    )
+    state["cubism_dispatch_execution"] = {**execution, "execution_path": execution_path}
+    return {
+        "status": execution.get("status", "error"),
+        "session_id": session_id,
+        "automation_backend": bundle.get("backend"),
+        "execution_path": execution_path,
+        "executed_steps": execution.get("executed_steps", []),
+        "artifacts": execution.get("artifacts", []),
+        "resume": execution.get("resume", {}),
+        "message": execution.get("message", "Cubism dispatch execution resumed."),
     }
 
 
@@ -967,6 +1013,30 @@ async def execute_cubism_dispatch(session_id: str) -> dict[str, Any]:
         return _build_error_payload(
             error_code="cubism_dispatch_execution_failed",
             message="Cubism dispatch execution failed. Check server logs for details.",
+            session_id=session_id,
+            partial_outputs=_partial_outputs(session_id),
+        )
+
+
+@mcp.tool()
+async def resume_cubism_dispatch(session_id: str) -> dict[str, Any]:
+    try:
+        with _session_operation(session_id):
+            return await _resume_cubism_dispatch_impl(session_id)
+    except InputValidationError as exc:
+        logger.warning(f"Validation error in resume_cubism_dispatch for {session_id}: {exc}")
+        return _build_error_payload(
+            error_code="invalid_input",
+            message=str(exc),
+            session_id=session_id,
+            validation_errors=[str(exc)],
+            partial_outputs=_partial_outputs(session_id),
+        )
+    except Exception:
+        logger.exception(f"Cubism dispatch resume failed for session {session_id}")
+        return _build_error_payload(
+            error_code="cubism_dispatch_resume_failed",
+            message="Cubism dispatch resume failed. Check server logs for details.",
             session_id=session_id,
             partial_outputs=_partial_outputs(session_id),
         )

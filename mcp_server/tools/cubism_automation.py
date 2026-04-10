@@ -354,7 +354,13 @@ class CubismAutomationManager:
             "warnings": execution.get("warnings", []),
         }
 
-    def execute_dispatch_bundle(self, bundle: JsonDict) -> JsonDict:
+    def execute_dispatch_bundle(
+        self,
+        bundle: JsonDict,
+        *,
+        previous_execution: JsonDict | None = None,
+        resume: bool = False,
+    ) -> JsonDict:
         backend = str(bundle.get("backend", "native_gui"))
         descriptor = self.resolve_backend(backend)
         if not bool(bundle.get("ready_to_execute", False)):
@@ -389,9 +395,32 @@ class CubismAutomationManager:
         executed_steps: list[JsonDict] = []
         artifacts: list[str] = []
         step_statuses: dict[str, str] = {}
+        previous_successes = self._resume_successes(previous_execution) if resume else set()
+        resume_probe = (
+            self._probe_native_resume_window(native_controller, output_dir)
+            if resume and previous_successes
+            else None
+        )
+        if resume_probe and resume_probe.get("artifact_path"):
+            artifacts.append(str(resume_probe["artifact_path"]))
         for step in bundle.get("dispatch_steps", []):
             action = str(step.get("source_action", ""))
-            if action == "launch_editor":
+            can_skip = action in previous_successes and self._can_skip_resumed_action(
+                action,
+                native_controller,
+                resume_probe,
+            )
+            if can_skip:
+                result = {
+                    "step": step.get("step"),
+                    "source_action": action,
+                    "status": "skipped",
+                    "details": (
+                        "Skipped because this step already succeeded in the previous execution."
+                    ),
+                }
+                step_statuses[action] = "success"
+            elif action == "launch_editor":
                 result = self._execute_native_launch(
                     editor_path, output_dir, native_controller, native_adapter, bundle
                 )
@@ -400,9 +429,13 @@ class CubismAutomationManager:
                     psd_path, output_dir, native_controller, native_adapter, bundle
                 )
             elif action == "apply_template":
-                result = self._execute_native_apply_template(output_dir, native_adapter, bundle)
+                result = self._execute_native_apply_template(
+                    output_dir, native_controller, native_adapter, bundle
+                )
             elif action == "export_embedded_data":
-                result = self._execute_native_export(output_dir, native_adapter, bundle)
+                result = self._execute_native_export(
+                    output_dir, native_controller, native_adapter, bundle
+                )
             elif action == "validate_export_bundle":
                 if step_statuses.get("export_embedded_data") != "success":
                     result = {
@@ -420,8 +453,10 @@ class CubismAutomationManager:
                     "status": "pending",
                     "details": "Execution PoC does not handle this step yet.",
                 }
+                step_statuses[action] = str(result.get("status", "pending"))
+            if not can_skip:
+                step_statuses[action] = str(result.get("status", "pending"))
             executed_steps.append(result)
-            step_statuses[action] = str(result.get("status", "pending"))
             artifact_path = result.get("artifact_path")
             if artifact_path:
                 artifacts.append(str(artifact_path))
@@ -429,6 +464,9 @@ class CubismAutomationManager:
         failed = [step for step in executed_steps if step.get("status") == "error"]
         recorded = [step for step in executed_steps if step.get("status") == "recorded"]
         pending = [step for step in executed_steps if step.get("status") == "pending"]
+        skipped = [step for step in executed_steps if step.get("status") == "skipped"]
+        current_successes = self._successful_actions({"executed_steps": executed_steps})
+        cumulative_successes = sorted(previous_successes.union(current_successes))
         if failed:
             status = "error"
         elif recorded or pending:
@@ -440,6 +478,13 @@ class CubismAutomationManager:
             "backend": descriptor.name,
             "executed_steps": executed_steps,
             "artifacts": artifacts,
+            "resume": {
+                "requested": resume,
+                "skipped_actions": [step.get("source_action") for step in skipped],
+                "previous_successes": sorted(previous_successes),
+                "cumulative_successes": cumulative_successes,
+                "window_probe": resume_probe,
+            },
             "message": (
                 "Native GUI execution PoC completed."
                 if status == "success"
@@ -451,12 +496,58 @@ class CubismAutomationManager:
             ),
         }
 
+    def _probe_native_resume_window(
+        self,
+        native_controller: JsonDict,
+        output_dir: Path,
+    ) -> JsonDict | None:
+        if native_controller.get("status") != "ready":
+            return None
+        return self._native_controller.probe_window(native_controller, output_dir)
+
+    def _can_skip_resumed_action(
+        self,
+        action: str,
+        native_controller: JsonDict,
+        resume_probe: JsonDict | None,
+    ) -> bool:
+        if action not in {"launch_editor", "import_psd"}:
+            return True
+        if native_controller.get("status") != "ready" or native_controller.get("mode") != "execute":
+            return False
+        return bool(resume_probe and resume_probe.get("status") == "success")
+
+    def _resume_successes(self, execution: JsonDict | None) -> set[str]:
+        if not execution:
+            return set()
+        resume = dict(execution.get("resume") or {})
+        cumulative = resume.get("cumulative_successes")
+        if isinstance(cumulative, list):
+            return {str(action) for action in cumulative if str(action)}
+        previous = resume.get("previous_successes")
+        skipped = resume.get("skipped_actions")
+        actions: set[str] = self._successful_actions(execution)
+        if isinstance(previous, list):
+            actions.update(str(action) for action in previous if str(action))
+        if isinstance(skipped, list):
+            actions.update(str(action) for action in skipped if str(action))
+        return actions
+
+    def _successful_actions(self, execution: JsonDict | None) -> set[str]:
+        if not execution:
+            return set()
+        actions: set[str] = set()
+        for step in execution.get("executed_steps", []):
+            if str(step.get("status")) == "success":
+                actions.add(str(step.get("source_action", "")))
+        return actions
+
     def write_dispatch_execution(
-        self, execution: JsonDict, output_dir: str, model_name: str
+        self, execution: JsonDict, output_dir: str, model_name: str, suffix: str = ""
     ) -> str:
         output_path = Path(output_dir)
         output_path.mkdir(parents=True, exist_ok=True)
-        execution_path = output_path / f"{model_name}_cubism_dispatch_execution.json"
+        execution_path = output_path / f"{model_name}_cubism_dispatch_execution{suffix}.json"
         execution_path.write_text(
             json.dumps(execution, indent=2, ensure_ascii=False), encoding="utf-8"
         )
@@ -653,6 +744,34 @@ class CubismAutomationManager:
             }
         return self._native_controller.execute_launch(native_controller, editor_path, output_dir)
 
+    def _execute_native_controller_apply_template(
+        self,
+        native_controller: JsonDict,
+        template_id: str,
+        output_dir: Path,
+    ) -> JsonDict | None:
+        if native_controller.get("status") != "ready":
+            return None
+        return self._native_controller.execute_apply_template(
+            native_controller,
+            template_id,
+            output_dir,
+        )
+
+    def _execute_native_controller_export(
+        self,
+        native_controller: JsonDict,
+        output_dir: Path,
+        model_name: str,
+    ) -> JsonDict | None:
+        if native_controller.get("status") != "ready":
+            return None
+        return self._native_controller.execute_export(
+            native_controller,
+            output_dir,
+            model_name,
+        )
+
     def _execute_native_controller_import(
         self,
         native_controller: JsonDict,
@@ -752,9 +871,18 @@ class CubismAutomationManager:
     def _execute_native_apply_template(
         self,
         output_dir: Path,
+        native_controller: JsonDict,
         native_adapter: JsonDict,
         bundle: JsonDict,
     ) -> JsonDict:
+        controller_result = self._execute_native_controller_apply_template(
+            native_controller,
+            str(bundle.get("template_id", "")),
+            output_dir,
+        )
+        if controller_result is not None:
+            return controller_result
+
         adapter_result = self._execute_native_adapter_action(
             native_adapter,
             action="apply_template",
@@ -790,9 +918,18 @@ class CubismAutomationManager:
     def _execute_native_export(
         self,
         output_dir: Path,
+        native_controller: JsonDict,
         native_adapter: JsonDict,
         bundle: JsonDict,
     ) -> JsonDict:
+        controller_result = self._execute_native_controller_export(
+            native_controller,
+            output_dir,
+            str(bundle.get("model_name", "ATRI")),
+        )
+        if controller_result is not None:
+            return controller_result
+
         adapter_result = self._execute_native_adapter_action(
             native_adapter,
             action="export_embedded_data",
