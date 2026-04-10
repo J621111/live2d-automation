@@ -1,8 +1,27 @@
-﻿{
+{
   "profile_name": "windows_cubism_default",
   "window_title_contains": "Cubism Editor",
   "import_shortcut": "^o",
+  "template_shortcut": "^+t",
+  "export_shortcut": "^+e",
   "launch_wait_seconds": 2.0,
   "activation_wait_seconds": 1.0,
-  "dialog_wait_seconds": 0.8
+  "dialog_wait_seconds": 0.8,
+  "template_dialog_wait_seconds": 0.8,
+  "export_dialog_wait_seconds": 1.0,
+  "capture_screenshot_on_error": true,
+  "failure_capture_wait_seconds": 0.2,
+  "known_dialog_sequences": {
+    "import_psd": [],
+    "apply_template": [],
+    "export_embedded_data": []
+  },
+  "retry_attempts": 1,
+  "retry_backoff_seconds": 0.5,
+  "action_retry_attempts": {
+    "launch_editor": 1,
+    "import_psd": 1,
+    "apply_template": 1,
+    "export_embedded_data": 1
+  }
 }
