@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import subprocess
 import sys
 from pathlib import Path
 
@@ -16,8 +17,11 @@ from mcp_server.secure_server_impl import (
     export_model,
     generate_layers,
     prepare_cubism_automation,
+    resume_cubism_dispatch,
     validate_cubism_export,
 )
+from mcp_server.tools.cubism_automation import CubismAutomationManager
+from mcp_server.tools.native_gui_controller import NativeWindowsGUIController
 
 
 def _create_sample_character_image(path: Path) -> Path:
@@ -39,6 +43,7 @@ def _create_sample_character_image(path: Path) -> Path:
 def _write_python_adapter(path: Path) -> Path:
     script = """import json
 import os
+import subprocess
 import sys
 from pathlib import Path
 
@@ -595,20 +600,17 @@ async def test_execute_cubism_dispatch_uses_builtin_controller_dry_run(
 
         execute_result = await execute_cubism_dispatch(session_id)
         assert execute_result["status"] == "partial"
-        launch_step = next(
-            step
-            for step in execute_result["executed_steps"]
-            if step["source_action"] == "launch_editor"
-        )
-        import_step = next(
-            step
-            for step in execute_result["executed_steps"]
-            if step["source_action"] == "import_psd"
-        )
-        assert launch_step["status"] == "recorded"
-        assert import_step["status"] == "recorded"
+        step_statuses = {
+            step["source_action"]: step["status"] for step in execute_result["executed_steps"]
+        }
+        assert step_statuses["launch_editor"] == "recorded"
+        assert step_statuses["import_psd"] == "recorded"
+        assert step_statuses["apply_template"] == "recorded"
+        assert step_statuses["export_embedded_data"] == "recorded"
         assert (package_dir / "native_gui_builtin_launch.ps1").exists()
         assert (package_dir / "native_gui_builtin_import.ps1").exists()
+        assert (package_dir / "native_gui_builtin_apply_template.ps1").exists()
+        assert (package_dir / "native_gui_builtin_export.ps1").exists()
     finally:
         await close_session(session_id)
 
@@ -1244,3 +1246,586 @@ async def test_validate_cubism_export_rejects_broken_model_references(
         )
     finally:
         await close_session(session_id)
+
+
+def test_native_gui_controller_captures_failure_artifacts(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    controller = NativeWindowsGUIController()
+    output_dir = tmp_path / "controller_failure"
+    controller_state = {
+        "status": "ready",
+        "mode": "execute",
+        "profile": {
+            "window_title_contains": "Cubism Editor",
+            "export_shortcut": "^+e",
+            "activation_wait_seconds": 0.0,
+            "export_dialog_wait_seconds": 0.0,
+            "capture_screenshot_on_error": True,
+            "failure_capture_wait_seconds": 0.0,
+        },
+    }
+
+    def fake_run(script_path: Path) -> subprocess.CompletedProcess[str]:
+        if script_path.name.endswith("_failure_capture.ps1"):
+            screenshot_path = (
+                output_dir / "native_gui_builtin_export_embedded_data_failure_capture.png"
+            )
+            screenshot_path.parent.mkdir(parents=True, exist_ok=True)
+            screenshot_path.write_bytes(b"png")
+            return subprocess.CompletedProcess([str(script_path)], 0, "captured", "")
+        return subprocess.CompletedProcess([str(script_path)], 1, "", "export failed")
+
+    monkeypatch.setattr(controller, "_run_powershell", fake_run)
+
+    result = controller.execute_export(controller_state, output_dir, "FailureCase")
+
+    assert result["status"] == "error"
+    failure_capture = result["failure_capture"]
+    assert failure_capture["status"] == "success"
+    assert Path(failure_capture["artifact_path"]).exists()
+    assert Path(failure_capture["script_path"]).exists()
+    assert Path(failure_capture["screenshot_path"]).exists()
+
+    payload = json.loads(Path(result["artifact_path"]).read_text(encoding="utf-8"))
+    assert payload["returncode"] == 1
+    assert payload["failure_capture"]["status"] == "success"
+
+
+def test_native_gui_controller_can_disable_failure_capture(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    controller = NativeWindowsGUIController()
+    output_dir = tmp_path / "controller_failure_disabled"
+    controller_state = {
+        "status": "ready",
+        "mode": "execute",
+        "profile": {
+            "window_title_contains": "Cubism Editor",
+            "template_shortcut": "^+t",
+            "activation_wait_seconds": 0.0,
+            "template_dialog_wait_seconds": 0.0,
+            "capture_screenshot_on_error": False,
+        },
+    }
+
+    monkeypatch.setattr(
+        controller,
+        "_run_powershell",
+        lambda script_path: subprocess.CompletedProcess([str(script_path)], 2, "", "apply failed"),
+    )
+
+    result = controller.execute_apply_template(controller_state, "standard_bust_up", output_dir)
+
+    assert result["status"] == "error"
+    failure_capture = result["failure_capture"]
+    assert failure_capture["status"] == "disabled"
+    assert "artifact_path" not in failure_capture
+    assert not list(output_dir.glob("*failure_capture*"))
+
+
+def test_native_gui_controller_embeds_known_dialog_sequences(tmp_path: Path) -> None:
+    controller = NativeWindowsGUIController()
+    output_dir = tmp_path / "controller_dialog_sequences"
+    controller_state = {
+        "status": "ready",
+        "mode": "dry_run",
+        "profile": {
+            "window_title_contains": "Cubism Editor",
+            "import_shortcut": "^o",
+            "template_shortcut": "^+t",
+            "export_shortcut": "^+e",
+            "activation_wait_seconds": 0.0,
+            "dialog_wait_seconds": 0.0,
+            "template_dialog_wait_seconds": 0.0,
+            "export_dialog_wait_seconds": 0.0,
+            "known_dialog_sequences": {
+                "import_psd": [{"keys": "{ENTER}", "wait_seconds": 0.1}],
+                "apply_template": [{"keys": "%y", "wait_seconds": 0.2}],
+                "export_embedded_data": [{"keys": "{TAB}{ENTER}", "wait_seconds": 0.3}],
+            },
+        },
+    }
+
+    controller.execute_import(controller_state, tmp_path / "demo.psd", output_dir)
+    controller.execute_apply_template(controller_state, "standard_bust_up", output_dir)
+    controller.execute_export(controller_state, output_dir, "DialogCase")
+
+    import_script = (output_dir / "native_gui_builtin_import.ps1").read_text(encoding="utf-8")
+    template_script = (output_dir / "native_gui_builtin_apply_template.ps1").read_text(
+        encoding="utf-8"
+    )
+    export_script = (output_dir / "native_gui_builtin_export.ps1").read_text(encoding="utf-8")
+
+    assert "Start-Sleep -Milliseconds 100" in import_script
+    assert '$wshell.SendKeys("{ENTER}")' in import_script
+    assert "Start-Sleep -Milliseconds 200" in template_script
+    assert '$wshell.SendKeys("%y")' in template_script
+    assert "Start-Sleep -Milliseconds 300" in export_script
+    assert '$wshell.SendKeys("{TAB}{ENTER}")' in export_script
+
+
+def test_native_gui_controller_retries_until_success(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    controller = NativeWindowsGUIController()
+    output_dir = tmp_path / "controller_retry"
+    controller_state = {
+        "status": "ready",
+        "mode": "execute",
+        "profile": {
+            "window_title_contains": "Cubism Editor",
+            "import_shortcut": "^o",
+            "activation_wait_seconds": 0.0,
+            "dialog_wait_seconds": 0.0,
+            "retry_attempts": 1,
+            "retry_backoff_seconds": 0.0,
+        },
+    }
+    attempts = {"count": 0}
+
+    def fake_run(script_path: Path) -> subprocess.CompletedProcess[str]:
+        attempts["count"] += 1
+        if attempts["count"] == 1:
+            return subprocess.CompletedProcess([str(script_path)], 1, "", "first failure")
+        return subprocess.CompletedProcess([str(script_path)], 0, "ok", "")
+
+    monkeypatch.setattr(controller, "_run_powershell", fake_run)
+
+    result = controller.execute_import(controller_state, tmp_path / "demo.psd", output_dir)
+
+    assert result["status"] == "success"
+    assert result["attempt_count"] == 2
+    payload = json.loads(Path(result["artifact_path"]).read_text(encoding="utf-8"))
+    assert payload["attempt_count"] == 2
+    assert payload["attempts"][0]["returncode"] == 1
+    assert payload["attempts"][1]["returncode"] == 0
+
+
+@pytest.mark.asyncio
+async def test_resume_cubism_dispatch_skips_previous_successes(
+    sample_image_path: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fake_editor = tmp_path / "CubismEditor5.exe"
+    fake_editor.write_bytes(b"stub")
+    partial_adapter = _write_command_script(
+        tmp_path / "native_gui_partial_resume_adapter",
+        [
+            'if /I "%1"=="launch_editor" exit /b 0',
+            'if /I "%1"=="import_psd" exit /b 0',
+            'if /I "%1"=="apply_template" exit /b 64',
+            'if /I "%1"=="export_embedded_data" exit /b 64',
+            'if /I "%1"=="validate_export_bundle" exit /b 64',
+            "exit /b 64",
+        ],
+        [
+            'if [ "$1" = "launch_editor" ]; then exit 0; fi',
+            'if [ "$1" = "import_psd" ]; then exit 0; fi',
+            'if [ "$1" = "apply_template" ]; then exit 64; fi',
+            'if [ "$1" = "export_embedded_data" ]; then exit 64; fi',
+            'if [ "$1" = "validate_export_bundle" ]; then exit 64; fi',
+            "exit 64",
+        ],
+    )
+    full_adapter = _write_python_adapter(tmp_path / "native_gui_resume_adapter.py")
+    monkeypatch.setenv(
+        "LIVE2D_NATIVE_GUI_ADAPTER_COMMAND",
+        f'"{partial_adapter}"',
+    )
+
+    analyze_result = await analyze_photo(str(sample_image_path))
+    assert analyze_result["status"] == "success"
+    session_id = analyze_result["session_id"]
+
+    try:
+        package_dir = tmp_path / "cubism_package"
+        assert (await generate_layers(session_id, str(tmp_path / "semantic_layers")))[
+            "status"
+        ] == "success"
+        assert (
+            await build_cubism_psd(
+                session_id,
+                str(package_dir),
+                template_id="standard_bust_up",
+                model_name="Stage6Resume",
+            )
+        )["status"] == "success"
+        prepare_result = await prepare_cubism_automation(
+            session_id,
+            str(package_dir),
+            template_id="standard_bust_up",
+            model_name="Stage6Resume",
+            editor_path=str(fake_editor),
+            automation_backend="native_gui",
+        )
+        assert prepare_result["status"] == "ready"
+
+        execute_result = await execute_cubism_dispatch(session_id)
+        assert execute_result["status"] == "partial"
+        first_step_statuses = {
+            step["source_action"]: step["status"] for step in execute_result["executed_steps"]
+        }
+        assert first_step_statuses["launch_editor"] == "success"
+        assert first_step_statuses["import_psd"] == "success"
+        assert first_step_statuses["apply_template"] == "recorded"
+
+        monkeypatch.setenv(
+            "LIVE2D_NATIVE_GUI_ADAPTER_COMMAND",
+            f'"{sys.executable}" "{full_adapter}"',
+        )
+        resume_result = await resume_cubism_dispatch(session_id)
+        assert resume_result["status"] == "success"
+        resume_statuses = {
+            step["source_action"]: step["status"] for step in resume_result["executed_steps"]
+        }
+        assert resume_statuses["launch_editor"] == "success"
+        assert resume_statuses["import_psd"] == "success"
+        assert resume_statuses["apply_template"] == "success"
+        assert resume_statuses["export_embedded_data"] == "success"
+        assert resume_statuses["validate_export_bundle"] == "success"
+        assert resume_result["resume"]["requested"] is True
+        assert resume_result["resume"]["skipped_actions"] == []
+        assert Path(resume_result["execution_path"]).name.endswith("_resume.json")
+    finally:
+        await close_session(session_id)
+
+
+@pytest.mark.asyncio
+async def test_resume_cubism_dispatch_preserves_cumulative_successes(
+    sample_image_path: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fake_editor = tmp_path / "CubismEditor5.exe"
+    fake_editor.write_bytes(b"stub")
+    partial_adapter = _write_command_script(
+        tmp_path / "native_gui_partial_resume_cumulative_adapter",
+        [
+            'if /I "%1"=="launch_editor" exit /b 0',
+            'if /I "%1"=="import_psd" exit /b 0',
+            'if /I "%1"=="apply_template" exit /b 64',
+            'if /I "%1"=="export_embedded_data" exit /b 64',
+            'if /I "%1"=="validate_export_bundle" exit /b 64',
+            "exit /b 64",
+        ],
+        [
+            'if [ "$1" = "launch_editor" ]; then exit 0; fi',
+            'if [ "$1" = "import_psd" ]; then exit 0; fi',
+            'if [ "$1" = "apply_template" ]; then exit 64; fi',
+            'if [ "$1" = "export_embedded_data" ]; then exit 64; fi',
+            'if [ "$1" = "validate_export_bundle" ]; then exit 64; fi',
+            "exit 64",
+        ],
+    )
+    full_adapter = _write_python_adapter(tmp_path / "native_gui_resume_cumulative_adapter.py")
+    monkeypatch.setenv("LIVE2D_NATIVE_GUI_ADAPTER_COMMAND", f'"{partial_adapter}"')
+
+    analyze_result = await analyze_photo(str(sample_image_path))
+    assert analyze_result["status"] == "success"
+    session_id = analyze_result["session_id"]
+
+    try:
+        package_dir = tmp_path / "cubism_package"
+        assert (await generate_layers(session_id, str(tmp_path / "semantic_layers")))[
+            "status"
+        ] == "success"
+        assert (
+            await build_cubism_psd(
+                session_id,
+                str(package_dir),
+                template_id="standard_bust_up",
+                model_name="Stage6ResumeAgain",
+            )
+        )["status"] == "success"
+        prepare_result = await prepare_cubism_automation(
+            session_id,
+            str(package_dir),
+            template_id="standard_bust_up",
+            model_name="Stage6ResumeAgain",
+            editor_path=str(fake_editor),
+            automation_backend="native_gui",
+        )
+        assert prepare_result["status"] == "ready"
+
+        first_result = await execute_cubism_dispatch(session_id)
+        assert first_result["status"] == "partial"
+
+        monkeypatch.setenv(
+            "LIVE2D_NATIVE_GUI_ADAPTER_COMMAND",
+            f'"{sys.executable}" "{full_adapter}"',
+        )
+        second_result = await resume_cubism_dispatch(session_id)
+        assert second_result["status"] == "success"
+        assert sorted(second_result["resume"]["cumulative_successes"]) == [
+            "apply_template",
+            "export_embedded_data",
+            "import_psd",
+            "launch_editor",
+            "validate_export_bundle",
+        ]
+
+        monkeypatch.setenv("LIVE2D_NATIVE_GUI_ADAPTER_COMMAND", f'"{partial_adapter}"')
+        third_result = await resume_cubism_dispatch(session_id)
+        assert third_result["status"] == "success"
+        third_statuses = {
+            step["source_action"]: step["status"] for step in third_result["executed_steps"]
+        }
+        assert third_statuses["launch_editor"] == "success"
+        assert third_statuses["import_psd"] == "success"
+        assert third_statuses["apply_template"] == "skipped"
+        assert third_statuses["export_embedded_data"] == "skipped"
+        assert third_statuses["validate_export_bundle"] == "skipped"
+        assert sorted(third_result["resume"]["skipped_actions"]) == [
+            "apply_template",
+            "export_embedded_data",
+            "validate_export_bundle",
+        ]
+    finally:
+        await close_session(session_id)
+
+
+def test_native_gui_controller_retries_after_timeout(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    controller = NativeWindowsGUIController()
+    output_dir = tmp_path / "controller_timeout_retry"
+    controller_state = {
+        "status": "ready",
+        "mode": "execute",
+        "profile": {
+            "window_title_contains": "Cubism Editor",
+            "import_shortcut": "^o",
+            "activation_wait_seconds": 0.0,
+            "dialog_wait_seconds": 0.0,
+            "retry_attempts": 1,
+            "retry_backoff_seconds": 0.0,
+        },
+    }
+    attempts = {"count": 0}
+
+    def fake_run(script_path: Path) -> subprocess.CompletedProcess[str]:
+        attempts["count"] += 1
+        if attempts["count"] == 1:
+            raise subprocess.TimeoutExpired([str(script_path)], 10)
+        return subprocess.CompletedProcess([str(script_path)], 0, "ok", "")
+
+    monkeypatch.setattr(controller, "_run_powershell", fake_run)
+
+    result = controller.execute_import(controller_state, tmp_path / "demo.psd", output_dir)
+
+    assert result["status"] == "success"
+    assert result["timed_out"] is False
+    payload = json.loads(Path(result["artifact_path"]).read_text(encoding="utf-8"))
+    assert payload["attempt_count"] == 2
+    assert payload["attempts"][0]["timeout"] is True
+    assert payload["attempts"][1]["returncode"] == 0
+
+
+def test_native_gui_controller_captures_failure_after_timeout(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    controller = NativeWindowsGUIController()
+    output_dir = tmp_path / "controller_timeout_failure"
+    controller_state = {
+        "status": "ready",
+        "mode": "execute",
+        "profile": {
+            "window_title_contains": "Cubism Editor",
+            "export_shortcut": "^+e",
+            "activation_wait_seconds": 0.0,
+            "export_dialog_wait_seconds": 0.0,
+            "retry_attempts": 0,
+            "capture_screenshot_on_error": True,
+            "failure_capture_wait_seconds": 0.0,
+        },
+    }
+
+    def fake_run(script_path: Path) -> subprocess.CompletedProcess[str]:
+        if script_path.name.endswith("_failure_capture.ps1"):
+            screenshot_path = (
+                output_dir / "native_gui_builtin_export_embedded_data_failure_capture.png"
+            )
+            screenshot_path.parent.mkdir(parents=True, exist_ok=True)
+            screenshot_path.write_bytes(b"png")
+            return subprocess.CompletedProcess([str(script_path)], 0, "captured", "")
+        raise subprocess.TimeoutExpired([str(script_path)], 10)
+
+    monkeypatch.setattr(controller, "_run_powershell", fake_run)
+
+    result = controller.execute_export(controller_state, output_dir, "TimeoutCase")
+
+    assert result["status"] == "error"
+    assert result["timed_out"] is True
+    failure_capture = result["failure_capture"]
+    assert failure_capture["status"] == "success"
+    payload = json.loads(Path(result["artifact_path"]).read_text(encoding="utf-8"))
+    assert payload["timed_out"] is True
+    assert payload["attempts"][0]["timeout"] is True
+
+
+def test_resume_requires_live_window_probe_before_skipping_prerequisites(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    manager = CubismAutomationManager()
+    bundle = {
+        "backend": "native_gui",
+        "ready_to_execute": True,
+        "output_dir": str(tmp_path),
+        "model_name": "ProbeCase",
+        "template_id": "standard_bust_up",
+        "editor": {"editor_path": str(tmp_path / "CubismEditor5.exe")},
+        "native_controller": {"status": "ready", "mode": "execute", "profile": {}},
+        "native_adapter": {"status": "disabled"},
+        "dispatch_steps": [
+            {"step": 1, "source_action": "launch_editor"},
+            {"step": 2, "source_action": "import_psd"},
+            {"step": 3, "source_action": "apply_template"},
+            {"step": 4, "source_action": "export_embedded_data"},
+            {"step": 5, "source_action": "validate_export_bundle"},
+        ],
+    }
+    previous_execution = {
+        "executed_steps": [
+            {"source_action": "launch_editor", "status": "success"},
+            {"source_action": "import_psd", "status": "success"},
+        ],
+        "resume": {"cumulative_successes": ["launch_editor", "import_psd"]},
+    }
+
+    monkeypatch.setattr(
+        manager,
+        "_probe_native_resume_window",
+        lambda native_controller, output_dir: {
+            "status": "error",
+            "artifact_path": str(tmp_path / "probe.json"),
+        },
+    )
+    monkeypatch.setattr(
+        manager,
+        "_execute_native_launch",
+        lambda editor_path, output_dir, native_controller, native_adapter, bundle: {
+            "source_action": "launch_editor",
+            "status": "success",
+        },
+    )
+    monkeypatch.setattr(
+        manager,
+        "_execute_native_import",
+        lambda psd_path, output_dir, native_controller, native_adapter, bundle: {
+            "source_action": "import_psd",
+            "status": "success",
+        },
+    )
+    monkeypatch.setattr(
+        manager,
+        "_execute_native_apply_template",
+        lambda output_dir, native_controller, native_adapter, bundle: {
+            "source_action": "apply_template",
+            "status": "success",
+        },
+    )
+    monkeypatch.setattr(
+        manager,
+        "_execute_native_export",
+        lambda output_dir, native_controller, native_adapter, bundle: {
+            "source_action": "export_embedded_data",
+            "status": "success",
+        },
+    )
+    monkeypatch.setattr(
+        manager,
+        "_execute_local_validation",
+        lambda output_dir, bundle: {"source_action": "validate_export_bundle", "status": "success"},
+    )
+
+    execution = manager.execute_dispatch_bundle(
+        bundle,
+        previous_execution=previous_execution,
+        resume=True,
+    )
+
+    statuses = {step["source_action"]: step["status"] for step in execution["executed_steps"]}
+    assert statuses["launch_editor"] == "success"
+    assert statuses["import_psd"] == "success"
+    assert execution["resume"]["window_probe"]["status"] == "error"
+
+
+def test_resume_does_not_skip_prerequisites_when_controller_cannot_probe(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    manager = CubismAutomationManager()
+    bundle = {
+        "backend": "native_gui",
+        "ready_to_execute": True,
+        "output_dir": str(tmp_path),
+        "model_name": "ProbeUnavailableCase",
+        "template_id": "standard_bust_up",
+        "editor": {"editor_path": str(tmp_path / "CubismEditor5.exe")},
+        "native_controller": {"status": "missing", "mode": "disabled", "profile": {}},
+        "native_adapter": {"status": "disabled"},
+        "dispatch_steps": [
+            {"step": 1, "source_action": "launch_editor"},
+            {"step": 2, "source_action": "import_psd"},
+            {"step": 3, "source_action": "apply_template"},
+            {"step": 4, "source_action": "export_embedded_data"},
+            {"step": 5, "source_action": "validate_export_bundle"},
+        ],
+    }
+    previous_execution = {
+        "executed_steps": [
+            {"source_action": "launch_editor", "status": "success"},
+            {"source_action": "import_psd", "status": "success"},
+        ],
+        "resume": {"cumulative_successes": ["launch_editor", "import_psd"]},
+    }
+
+    monkeypatch.setattr(
+        manager,
+        "_execute_native_launch",
+        lambda editor_path, output_dir, native_controller, native_adapter, bundle: {
+            "source_action": "launch_editor",
+            "status": "success",
+        },
+    )
+    monkeypatch.setattr(
+        manager,
+        "_execute_native_import",
+        lambda psd_path, output_dir, native_controller, native_adapter, bundle: {
+            "source_action": "import_psd",
+            "status": "success",
+        },
+    )
+    monkeypatch.setattr(
+        manager,
+        "_execute_native_apply_template",
+        lambda output_dir, native_controller, native_adapter, bundle: {
+            "source_action": "apply_template",
+            "status": "success",
+        },
+    )
+    monkeypatch.setattr(
+        manager,
+        "_execute_native_export",
+        lambda output_dir, native_controller, native_adapter, bundle: {
+            "source_action": "export_embedded_data",
+            "status": "success",
+        },
+    )
+    monkeypatch.setattr(
+        manager,
+        "_execute_local_validation",
+        lambda output_dir, bundle: {"source_action": "validate_export_bundle", "status": "success"},
+    )
+
+    execution = manager.execute_dispatch_bundle(
+        bundle,
+        previous_execution=previous_execution,
+        resume=True,
+    )
+
+    statuses = {step["source_action"]: step["status"] for step in execution["executed_steps"]}
+    assert statuses["launch_editor"] == "success"
+    assert statuses["import_psd"] == "success"
+    assert execution["resume"]["window_probe"] is None

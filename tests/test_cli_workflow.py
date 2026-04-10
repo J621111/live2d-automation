@@ -97,6 +97,8 @@ def test_cli_run_with_builtin_controller_dry_run(tmp_path: Path) -> None:
     assert report["status"] == "partial"
     assert (output_dir / "native_gui_builtin_launch.ps1").exists()
     assert (output_dir / "native_gui_builtin_import.ps1").exists()
+    assert (output_dir / "native_gui_builtin_apply_template.ps1").exists()
+    assert (output_dir / "native_gui_builtin_export.ps1").exists()
 
 
 def test_cli_run_with_demo_adapter_partial(tmp_path: Path) -> None:
