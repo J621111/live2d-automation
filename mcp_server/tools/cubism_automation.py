@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any
 
 from mcp_server.tools.export_validator import CubismExportValidator
+from mcp_server.tools.native_gui_controller import NativeWindowsGUIController
 
 JsonDict = dict[str, Any]
 _ALLOWED_BACKENDS = {"native_gui", "opencli"}
@@ -36,6 +37,7 @@ class CubismAutomationManager:
     """Resolve and prepare Cubism automation backends."""
 
     def __init__(self) -> None:
+        self._native_controller = NativeWindowsGUIController()
         self._descriptors: dict[str, BackendDescriptor] = {
             "native_gui": BackendDescriptor(
                 name="native_gui",
@@ -46,9 +48,14 @@ class CubismAutomationManager:
                     "menu_navigation",
                     "keyboard_shortcuts",
                     "dialog_handling",
+                    "builtin_controller",
                     "adapter_hook",
                 ],
-                env_vars=["LIVE2D_NATIVE_GUI_ADAPTER_COMMAND"],
+                env_vars=[
+                    "LIVE2D_NATIVE_GUI_CONTROLLER_MODE",
+                    "LIVE2D_NATIVE_GUI_PROFILE",
+                    "LIVE2D_NATIVE_GUI_ADAPTER_COMMAND",
+                ],
             ),
             "opencli": BackendDescriptor(
                 name="opencli",
@@ -173,6 +180,9 @@ class CubismAutomationManager:
                     }
                 )
         return results
+
+    def _resolve_native_controller(self) -> JsonDict:
+        return self._native_controller.resolve()
 
     def _resolve_native_adapter_command(self, command_hint: str | None) -> JsonDict:
         if not command_hint:
@@ -334,6 +344,7 @@ class CubismAutomationManager:
             "output_dir": output_dir,
             "editor": editor_info,
             "integration_target": execution.get("integration_target"),
+            "native_controller": execution.get("native_controller"),
             "native_adapter": execution.get("native_adapter"),
             "preflight": {
                 "commands": execution.get("preflight_commands", []),
@@ -372,6 +383,7 @@ class CubismAutomationManager:
             else None
         )
         psd_path = Path(str(bundle.get("psd_path", ""))) if bundle.get("psd_path") else None
+        native_controller = dict(bundle.get("native_controller") or {})
         native_adapter = dict(bundle.get("native_adapter") or {})
 
         executed_steps: list[JsonDict] = []
@@ -381,10 +393,12 @@ class CubismAutomationManager:
             action = str(step.get("source_action", ""))
             if action == "launch_editor":
                 result = self._execute_native_launch(
-                    editor_path, output_dir, native_adapter, bundle
+                    editor_path, output_dir, native_controller, native_adapter, bundle
                 )
             elif action == "import_psd":
-                result = self._execute_native_import(psd_path, output_dir, native_adapter, bundle)
+                result = self._execute_native_import(
+                    psd_path, output_dir, native_controller, native_adapter, bundle
+                )
             elif action == "apply_template":
                 result = self._execute_native_apply_template(output_dir, native_adapter, bundle)
             elif action == "export_embedded_data":
@@ -452,6 +466,7 @@ class CubismAutomationManager:
         self,
         editor_path: Path | None,
         output_dir: Path,
+        native_controller: JsonDict,
         native_adapter: JsonDict,
         bundle: JsonDict,
     ) -> JsonDict:
@@ -461,6 +476,14 @@ class CubismAutomationManager:
                 "status": "error",
                 "details": "Editor path is missing.",
             }
+
+        controller_result = self._execute_native_controller_launch(
+            native_controller,
+            editor_path,
+            output_dir,
+        )
+        if controller_result is not None:
+            return controller_result
 
         adapter_result = self._execute_native_adapter_action(
             native_adapter,
@@ -556,6 +579,7 @@ class CubismAutomationManager:
         self,
         psd_path: Path | None,
         output_dir: Path,
+        native_controller: JsonDict,
         native_adapter: JsonDict,
         bundle: JsonDict,
     ) -> JsonDict:
@@ -565,6 +589,14 @@ class CubismAutomationManager:
                 "status": "error",
                 "details": "PSD path is missing.",
             }
+
+        controller_result = self._execute_native_controller_import(
+            native_controller,
+            psd_path,
+            output_dir,
+        )
+        if controller_result is not None:
+            return controller_result
 
         editor_info = dict(bundle.get("editor", {}))
         editor_path = (
@@ -604,6 +636,38 @@ class CubismAutomationManager:
             "details": "Recorded a native GUI import request for the prepared PSD.",
             "artifact_path": str(artifact_path),
         }
+
+    def _execute_native_controller_launch(
+        self,
+        native_controller: JsonDict,
+        editor_path: Path | None,
+        output_dir: Path,
+    ) -> JsonDict | None:
+        if native_controller.get("status") != "ready":
+            return None
+        if editor_path is None or not editor_path.exists():
+            return {
+                "source_action": "launch_editor",
+                "status": "error",
+                "details": "Editor path is missing.",
+            }
+        return self._native_controller.execute_launch(native_controller, editor_path, output_dir)
+
+    def _execute_native_controller_import(
+        self,
+        native_controller: JsonDict,
+        psd_path: Path | None,
+        output_dir: Path,
+    ) -> JsonDict | None:
+        if native_controller.get("status") != "ready":
+            return None
+        if psd_path is None or not psd_path.exists():
+            return {
+                "source_action": "import_psd",
+                "status": "error",
+                "details": "PSD path is missing.",
+            }
+        return self._native_controller.execute_import(native_controller, psd_path, output_dir)
 
     def _execute_native_adapter_action(
         self,
@@ -835,6 +899,7 @@ class CubismAutomationManager:
             missing_requirements.append("cubism_editor")
 
         command_info: JsonDict | None = None
+        native_controller = self._resolve_native_controller()
         native_adapter: JsonDict | None = None
         if descriptor.name == "opencli":
             command_info = self._resolve_opencli_command(os.getenv("OPENCLI_COMMAND"))
@@ -846,6 +911,9 @@ class CubismAutomationManager:
             if validation_error:
                 warnings.append(str(validation_error))
         else:
+            controller_error = native_controller.get("validation_error")
+            if controller_error:
+                warnings.append(str(controller_error))
             native_adapter = self._resolve_native_adapter_command(
                 os.getenv("LIVE2D_NATIVE_GUI_ADAPTER_COMMAND")
             )
@@ -883,6 +951,7 @@ class CubismAutomationManager:
             "preflight_results": (
                 command_info.get("preflight_results", []) if command_info else []
             ),
+            "native_controller": native_controller,
             "native_adapter": native_adapter,
             "plan_actions": [step.get("action") for step in plan.get("steps", [])],
         }

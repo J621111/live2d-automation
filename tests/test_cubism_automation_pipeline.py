@@ -515,6 +515,105 @@ async def test_execute_cubism_dispatch_completes_adapter_backed_flow(
 
 
 @pytest.mark.asyncio
+async def test_prepare_cubism_automation_resolves_builtin_controller(
+    sample_image_path: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fake_editor = tmp_path / "CubismEditor5.exe"
+    fake_editor.write_bytes(b"stub")
+    monkeypatch.setenv("LIVE2D_NATIVE_GUI_CONTROLLER_MODE", "dry_run")
+
+    analyze_result = await analyze_photo(str(sample_image_path))
+    assert analyze_result["status"] == "success"
+    session_id = analyze_result["session_id"]
+
+    try:
+        assert (await generate_layers(session_id, str(tmp_path / "semantic_layers")))[
+            "status"
+        ] == "success"
+        assert (
+            await build_cubism_psd(
+                session_id,
+                str(tmp_path / "cubism_package"),
+                template_id="standard_bust_up",
+                model_name="Stage5BuiltinPrepare",
+            )
+        )["status"] == "success"
+        prepare_result = await prepare_cubism_automation(
+            session_id,
+            str(tmp_path / "cubism_package"),
+            template_id="standard_bust_up",
+            model_name="Stage5BuiltinPrepare",
+            editor_path=str(fake_editor),
+            automation_backend="native_gui",
+        )
+        assert prepare_result["status"] == "ready"
+        execution = json.loads(Path(prepare_result["plan_path"]).read_text(encoding="utf-8"))
+        assert execution["execution"]["native_controller"]["status"] == "ready"
+        assert execution["execution"]["native_controller"]["mode"] == "dry_run"
+    finally:
+        await close_session(session_id)
+
+
+@pytest.mark.asyncio
+async def test_execute_cubism_dispatch_uses_builtin_controller_dry_run(
+    sample_image_path: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fake_editor = tmp_path / "CubismEditor5.exe"
+    fake_editor.write_bytes(b"stub")
+    monkeypatch.setenv("LIVE2D_NATIVE_GUI_CONTROLLER_MODE", "dry_run")
+
+    analyze_result = await analyze_photo(str(sample_image_path))
+    assert analyze_result["status"] == "success"
+    session_id = analyze_result["session_id"]
+
+    try:
+        package_dir = tmp_path / "cubism_package"
+        assert (await generate_layers(session_id, str(tmp_path / "semantic_layers")))[
+            "status"
+        ] == "success"
+        assert (
+            await build_cubism_psd(
+                session_id,
+                str(package_dir),
+                template_id="standard_bust_up",
+                model_name="Stage5BuiltinDryRun",
+            )
+        )["status"] == "success"
+        prepare_result = await prepare_cubism_automation(
+            session_id,
+            str(package_dir),
+            template_id="standard_bust_up",
+            model_name="Stage5BuiltinDryRun",
+            editor_path=str(fake_editor),
+            automation_backend="native_gui",
+        )
+        assert prepare_result["status"] == "ready"
+
+        execute_result = await execute_cubism_dispatch(session_id)
+        assert execute_result["status"] == "partial"
+        launch_step = next(
+            step
+            for step in execute_result["executed_steps"]
+            if step["source_action"] == "launch_editor"
+        )
+        import_step = next(
+            step
+            for step in execute_result["executed_steps"]
+            if step["source_action"] == "import_psd"
+        )
+        assert launch_step["status"] == "recorded"
+        assert import_step["status"] == "recorded"
+        assert (package_dir / "native_gui_builtin_launch.ps1").exists()
+        assert (package_dir / "native_gui_builtin_import.ps1").exists()
+    finally:
+        await close_session(session_id)
+
+
+@pytest.mark.asyncio
 async def test_execute_cubism_dispatch_records_binary_launch_request(
     sample_image_path: Path,
     tmp_path: Path,
