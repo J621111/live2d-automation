@@ -1,6 +1,15 @@
 {
   "profile_name": "windows_cubism_default",
   "window_title_contains": "Cubism Editor",
+  "window_probe_candidates": [
+    "Cubism Editor",
+    "Open",
+    "Import PSD",
+    "Template",
+    "Confirm",
+    "Export",
+    "Overwrite"
+  ],
   "import_shortcut": "^o",
   "template_shortcut": "^+t",
   "export_shortcut": "^+e",
@@ -16,6 +25,44 @@
     "apply_template": [],
     "export_embedded_data": []
   },
+  "known_dialog_recovery": {
+    "import_psd": [
+      {
+        "title_contains": "Open",
+        "keys": "~",
+        "wait_seconds": 0.2
+      },
+      {
+        "title_contains": "Import PSD",
+        "keys": "%y",
+        "wait_seconds": 0.2
+      }
+    ],
+    "apply_template": [
+      {
+        "title_contains": "Template",
+        "keys": "~",
+        "wait_seconds": 0.2
+      },
+      {
+        "title_contains": "Confirm",
+        "keys": "%y",
+        "wait_seconds": 0.2
+      }
+    ],
+    "export_embedded_data": [
+      {
+        "title_contains": "Export",
+        "keys": "~",
+        "wait_seconds": 0.2
+      },
+      {
+        "title_contains": "Overwrite",
+        "keys": "%y",
+        "wait_seconds": 0.2
+      }
+    ]
+  },
   "retry_attempts": 1,
   "retry_backoff_seconds": 0.5,
   "action_retry_attempts": {
@@ -23,5 +70,13 @@
     "import_psd": 1,
     "apply_template": 1,
     "export_embedded_data": 1
+  },
+  "retry_recovery_sequences": {
+    "default": [
+      {
+        "keys": "{ESC}",
+        "wait_seconds": 0.2
+      }
+    ]
   }
 }

@@ -147,6 +147,7 @@ class NativeWindowsGUIController:
                 "stdout": completed.stdout.strip(),
                 "stderr": completed.stderr.strip(),
             }
+            payload.update(self._parse_probe_stdout(payload["stdout"]))
         except subprocess.TimeoutExpired as exc:
             payload = {
                 "script_path": str(script_path),
@@ -164,6 +165,7 @@ class NativeWindowsGUIController:
             "script_path": str(script_path),
             "returncode": payload.get("returncode"),
             "timed_out": payload.get("timed_out", False),
+            **({"diagnostics": payload["diagnostics"]} if "diagnostics" in payload else {}),
         }
 
     def execute_export(self, controller: JsonDict, output_dir: Path, model_name: str) -> JsonDict:
@@ -239,8 +241,17 @@ class NativeWindowsGUIController:
                         "timeout": True,
                     }
                 )
-                if attempt_index < retry_attempts and retry_backoff_seconds > 0:
-                    time.sleep(retry_backoff_seconds)
+                if attempt_index < retry_attempts:
+                    attempts[-1]["recovery"] = self._run_retry_recovery(
+                        source_action,
+                        output_dir,
+                        profile,
+                        attempt_index + 1,
+                    )
+                    if not self._can_retry_after_recovery(attempts[-1]["recovery"]):
+                        break
+                    if retry_backoff_seconds > 0:
+                        time.sleep(retry_backoff_seconds)
                 continue
 
             attempts.append(
@@ -254,8 +265,17 @@ class NativeWindowsGUIController:
             )
             if completed.returncode == 0:
                 break
-            if attempt_index < retry_attempts and retry_backoff_seconds > 0:
-                time.sleep(retry_backoff_seconds)
+            if attempt_index < retry_attempts:
+                attempts[-1]["recovery"] = self._run_retry_recovery(
+                    source_action,
+                    output_dir,
+                    profile,
+                    attempt_index + 1,
+                )
+                if not self._can_retry_after_recovery(attempts[-1]["recovery"]):
+                    break
+                if retry_backoff_seconds > 0:
+                    time.sleep(retry_backoff_seconds)
 
         final_returncode = completed.returncode if completed is not None else None
         final_stdout = completed.stdout.strip() if completed is not None else ""
@@ -305,6 +325,142 @@ class NativeWindowsGUIController:
                 else {}
             ),
         }
+
+    def _can_retry_after_recovery(self, recovery: JsonDict | None) -> bool:
+        if not recovery or recovery.get("status") != "success":
+            return False
+        probe = recovery.get("probe")
+        if isinstance(probe, dict):
+            return probe.get("status") == "success"
+        return False
+
+    def _run_retry_recovery(
+        self,
+        source_action: str,
+        output_dir: Path,
+        profile: JsonDict,
+        attempt_number: int,
+    ) -> JsonDict:
+        stem = f"native_gui_builtin_{source_action}_retry_recovery_attempt_{attempt_number}"
+        script_path = output_dir / f"{stem}.ps1"
+        artifact_path = output_dir / f"{stem}.json"
+        script_path.write_text(
+            self._retry_recovery_script(source_action, profile), encoding="utf-8"
+        )
+        try:
+            completed = self._run_powershell(script_path)
+            recovery: JsonDict = {
+                "status": "success" if completed.returncode == 0 else "error",
+                "script_path": str(script_path),
+                "artifact_path": str(artifact_path),
+                "dialog_recovery_plan": self._describe_retry_recovery_plan(source_action, profile),
+                "returncode": completed.returncode,
+                "stdout": completed.stdout.strip(),
+                "stderr": completed.stderr.strip(),
+            }
+        except subprocess.TimeoutExpired as exc:
+            recovery = {
+                "status": "error",
+                "script_path": str(script_path),
+                "artifact_path": str(artifact_path),
+                "dialog_recovery_plan": self._describe_retry_recovery_plan(source_action, profile),
+                "returncode": None,
+                "stdout": "",
+                "stderr": f"Timed out after {exc.timeout} seconds.",
+                "timed_out": True,
+            }
+        probe = self.probe_window(
+            {"status": "ready", "mode": "execute", "profile": profile}, output_dir
+        )
+        recovery["probe"] = probe
+        artifact_path.write_text(
+            json.dumps(recovery, indent=2, ensure_ascii=False), encoding="utf-8"
+        )
+        return recovery
+
+    def _retry_recovery_script(self, source_action: str, profile: JsonDict) -> str:
+        title = str(profile.get("window_title_contains", "Cubism Editor"))
+        entries = self._retry_recovery_sequences(source_action, profile)
+        lines = [
+            '$ErrorActionPreference = "Stop"\n',
+            "function Invoke-DialogRecovery {\n",
+            "    param(\n",
+            "        [string]$TitleFragment,\n",
+            "        [string]$Keys,\n",
+            "        [int]$WaitMilliseconds\n",
+            "    )\n",
+            (
+                "    if ([string]::IsNullOrWhiteSpace($TitleFragment) -or "
+                "[string]::IsNullOrWhiteSpace($Keys)) { return }\n"
+            ),
+            "    $process = Get-Process | Where-Object {\n",
+            '        $_.MainWindowTitle -and $_.MainWindowTitle -like "*$TitleFragment*"\n',
+            "    } | Select-Object -First 1\n",
+            "    if ($null -eq $process) { return }\n",
+            "    $wshell = New-Object -ComObject WScript.Shell\n",
+            "    if (-not $wshell.AppActivate($process.Id)) { return }\n",
+            "    if ($WaitMilliseconds -gt 0) {\n",
+            "        Start-Sleep -Milliseconds $WaitMilliseconds\n",
+            "    }\n",
+            "    $wshell.SendKeys($Keys)\n",
+            "}\n",
+            "$wshell = New-Object -ComObject WScript.Shell\n",
+            f'if (-not $wshell.AppActivate("{title}")) {{ exit 3 }}\n',
+        ]
+        for dialog in self._retry_recovery_dialogs(source_action, profile):
+            wait_ms = int(float(dialog.get("wait_seconds", 0.2)) * 1000)
+            title_fragment = self._escape_powershell_string(
+                str(dialog.get("title_contains", "")).strip()
+            )
+            escaped_keys = self._escape_send_keys(str(dialog.get("keys", "")).strip())
+            lines.append(
+                "Invoke-DialogRecovery "
+                f'-TitleFragment "{title_fragment}" '
+                f'-Keys "{escaped_keys}" '
+                f"-WaitMilliseconds {wait_ms}\n"
+            )
+            lines.append(f'if (-not $wshell.AppActivate("{title}")) {{ exit 3 }}\n')
+        for entry in entries:
+            if not isinstance(entry, dict):
+                continue
+            keys = str(entry.get("keys", "")).strip()
+            if not keys:
+                continue
+            wait_ms = int(float(entry.get("wait_seconds", 0.2)) * 1000)
+            escaped_keys = self._escape_send_keys(keys)
+            lines.append(f"Start-Sleep -Milliseconds {wait_ms}\n")
+            lines.append(f'$wshell.SendKeys("{escaped_keys}")\n')
+        return "".join(lines)
+
+    def _describe_retry_recovery_plan(self, source_action: str, profile: JsonDict) -> JsonDict:
+        dialogs_map = dict(profile.get("known_dialog_recovery") or {})
+        dialog_source = (
+            source_action
+            if source_action in dialogs_map and isinstance(dialogs_map.get(source_action), list)
+            else ("default" if isinstance(dialogs_map.get("default"), list) else None)
+        )
+        sequences_map = dict(profile.get("retry_recovery_sequences") or {})
+        sequence_source = (
+            source_action
+            if source_action in sequences_map and isinstance(sequences_map.get(source_action), list)
+            else ("default" if isinstance(sequences_map.get("default"), list) else None)
+        )
+        return {
+            "dialog_source": dialog_source,
+            "dialogs": self._retry_recovery_dialogs(source_action, profile),
+            "sequence_source": sequence_source,
+            "sequences": self._retry_recovery_sequences(source_action, profile),
+        }
+
+    def _retry_recovery_dialogs(self, source_action: str, profile: JsonDict) -> list[JsonDict]:
+        dialogs_map = dict(profile.get("known_dialog_recovery") or {})
+        selected = dialogs_map.get(source_action) or dialogs_map.get("default") or []
+        return [entry for entry in selected if isinstance(entry, dict)]
+
+    def _retry_recovery_sequences(self, source_action: str, profile: JsonDict) -> list[JsonDict]:
+        sequences_map = dict(profile.get("retry_recovery_sequences") or {})
+        selected = sequences_map.get(source_action) or sequences_map.get("default") or []
+        return [entry for entry in selected if isinstance(entry, dict)]
 
     def _retry_attempts(self, source_action: str, profile: JsonDict) -> int:
         action_overrides = dict(profile.get("action_retry_attempts") or {})
@@ -463,13 +619,70 @@ class NativeWindowsGUIController:
     def _escape_send_keys(self, value: str) -> str:
         return value.replace('"', '""')
 
+    def _escape_powershell_string(self, value: str) -> str:
+        return value.replace('"', '`"')
+
     def _window_probe_script(self, profile: JsonDict) -> str:
         title = str(profile.get("window_title_contains", "Cubism Editor"))
+        diagnostic_fragments = [title]
+        diagnostic_fragments.extend(
+            str(fragment).strip()
+            for fragment in profile.get("window_probe_candidates", [])
+            if str(fragment).strip()
+        )
+        unique_fragments: list[str] = []
+        for fragment in diagnostic_fragments:
+            if fragment not in unique_fragments:
+                unique_fragments.append(fragment)
+        fragment_json = json.dumps(unique_fragments, ensure_ascii=False).replace('"', '`"')
         return (
             '$ErrorActionPreference = "Stop"\n'
+            f'$fragments = ConvertFrom-Json "{fragment_json}"\n'
+            "$windows = Get-Process | Where-Object {\n"
+            "    $_.MainWindowTitle\n"
+            "} | ForEach-Object {\n"
+            "    [PSCustomObject]@{\n"
+            "        ProcessId = $_.Id\n"
+            "        ProcessName = $_.ProcessName\n"
+            "        Title = $_.MainWindowTitle\n"
+            "    }\n"
+            "}\n"
+            "$diagnosticWindows = @($windows | Where-Object {\n"
+            "    $title = $_.Title\n"
+            '    $fragments | Where-Object { $title -like "*$_*" }\n'
+            "})\n"
             "$wshell = New-Object -ComObject WScript.Shell\n"
-            f'if ($wshell.AppActivate("{title}")) {{ exit 0 }} else {{ exit 3 }}\n'
+            f'$activated = $wshell.AppActivate("{title}")\n'
+            "$result = [PSCustomObject]@{\n"
+            f'    target = "{self._escape_powershell_string(title)}"\n'
+            "    matched_titles = @($diagnosticWindows | ForEach-Object { $_.Title })\n"
+            "    diagnostics = @($diagnosticWindows)\n"
+            "}\n"
+            "$result | ConvertTo-Json -Depth 4 -Compress | Write-Output\n"
+            "if ($activated) { exit 0 } else { exit 3 }\n"
         )
+
+    def _parse_probe_stdout(self, stdout: str) -> JsonDict:
+        if not stdout:
+            return {}
+        lines = [line.strip() for line in stdout.splitlines() if line.strip()]
+        if not lines:
+            return {}
+        candidate = lines[-1]
+        try:
+            parsed = json.loads(candidate)
+        except json.JSONDecodeError:
+            return {}
+        if not isinstance(parsed, dict):
+            return {}
+        extracted: JsonDict = {}
+        if "matched_titles" in parsed and isinstance(parsed["matched_titles"], list):
+            extracted["matched_titles"] = parsed["matched_titles"]
+        if "diagnostics" in parsed and isinstance(parsed["diagnostics"], list):
+            extracted["diagnostics"] = parsed["diagnostics"]
+        if "target" in parsed:
+            extracted["target"] = parsed["target"]
+        return extracted
 
     def _capture_script(self, screenshot_path: Path, profile: JsonDict) -> str:
         delay_ms = int(float(profile.get("failure_capture_wait_seconds", 0.2)) * 1000)
