@@ -9,7 +9,7 @@ import shutil
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from mcp_server.tools.export_validator import CubismExportValidator
 from mcp_server.tools.native_gui_controller import NativeWindowsGUIController
@@ -182,7 +182,7 @@ class CubismAutomationManager:
         return results
 
     def _resolve_native_controller(self) -> JsonDict:
-        return self._native_controller.resolve()
+        return dict(self._native_controller.resolve())
 
     def _resolve_native_adapter_command(self, command_hint: str | None) -> JsonDict:
         if not command_hint:
@@ -503,7 +503,8 @@ class CubismAutomationManager:
     ) -> JsonDict | None:
         if native_controller.get("status") != "ready":
             return None
-        return self._native_controller.probe_window(native_controller, output_dir)
+        result = self._native_controller.probe_window(native_controller, output_dir)
+        return dict(result) if result is not None else None
 
     def _can_skip_resumed_action(
         self,
@@ -552,6 +553,185 @@ class CubismAutomationManager:
             json.dumps(execution, indent=2, ensure_ascii=False), encoding="utf-8"
         )
         return str(execution_path)
+
+    def build_profile_calibration_report(
+        self,
+        bundle: JsonDict,
+        execution: JsonDict,
+    ) -> JsonDict:
+        backend = str(bundle.get("backend", "native_gui"))
+        profile = dict(bundle.get("native_controller", {}).get("profile") or {})
+        probe_candidates = [
+            str(item).strip()
+            for item in profile.get("window_probe_candidates", [])
+            if str(item).strip()
+        ]
+        report: JsonDict = {
+            "backend": backend,
+            "status": "ready" if backend == "native_gui" else "blocked",
+            "model_name": bundle.get("model_name"),
+            "window_title_contains": profile.get("window_title_contains"),
+            "configured_window_probe_candidates": probe_candidates,
+            "observed_titles": [],
+            "resume_probe_titles": [],
+            "missing_probe_candidates": [],
+            "action_diagnostics": {},
+            "suggestions": [],
+            "message": (
+                "Profile calibration data collected from native GUI execution artifacts."
+                if backend == "native_gui"
+                else "Profile calibration is currently available only for native_gui."
+            ),
+        }
+        if backend != "native_gui":
+            return report
+
+        observed_titles: list[str] = []
+        resume_probe = dict(execution.get("resume", {}).get("window_probe") or {})
+        resume_titles = self._titles_from_probe_probe_like(resume_probe)
+        observed_titles.extend(resume_titles)
+        report["resume_probe_titles"] = resume_titles
+
+        action_diagnostics: dict[str, Any] = {}
+        for step in execution.get("executed_steps", []):
+            action = str(step.get("source_action", ""))
+            artifact_path = step.get("artifact_path")
+            if not action or not artifact_path:
+                continue
+            artifact = self._read_json_artifact(artifact_path)
+            if not artifact:
+                continue
+            attempts = artifact.get("attempts")
+            if not isinstance(attempts, list) or not attempts:
+                continue
+            action_titles: list[str] = []
+            recovery_plans: list[JsonDict] = []
+            for attempt in attempts:
+                if not isinstance(attempt, dict):
+                    continue
+                recovery = attempt.get("recovery")
+                if not isinstance(recovery, dict):
+                    continue
+                plan = recovery.get("dialog_recovery_plan")
+                if isinstance(plan, dict):
+                    recovery_plans.append(plan)
+                action_titles.extend(self._titles_from_probe_probe_like(recovery.get("probe")))
+            if not action_titles and not recovery_plans:
+                continue
+            observed_titles.extend(action_titles)
+            configured_dialogs = [
+                str(entry.get("title_contains", "")).strip()
+                for entry in self._configured_dialog_recovery(action, profile)
+                if str(entry.get("title_contains", "")).strip()
+            ]
+            inferred_dialog_titles = [
+                title
+                for title in self._unique_items(action_titles)
+                if title and title != str(profile.get("window_title_contains", "")).strip()
+            ]
+            missing_dialog_titles = [
+                title
+                for title in inferred_dialog_titles
+                if title not in configured_dialogs and title not in probe_candidates
+            ]
+            action_diagnostics[action] = {
+                "configured_dialog_titles": configured_dialogs,
+                "observed_titles": self._unique_items(action_titles),
+                "recovery_plan_sources": [
+                    {
+                        "dialog_source": plan.get("dialog_source"),
+                        "sequence_source": plan.get("sequence_source"),
+                    }
+                    for plan in recovery_plans
+                ],
+                "suggested_dialog_titles": missing_dialog_titles,
+            }
+
+        target_title = str(profile.get("window_title_contains", "")).strip()
+        unique_observed = self._unique_items(
+            [title for title in observed_titles if title and title != target_title]
+        )
+        report["observed_titles"] = unique_observed
+        report["missing_probe_candidates"] = [
+            title for title in unique_observed if title not in probe_candidates
+        ]
+        report["action_diagnostics"] = action_diagnostics
+        report["suggestions"] = self._calibration_suggestions(
+            report["missing_probe_candidates"], action_diagnostics
+        )
+        return report
+
+    def write_profile_calibration_report(
+        self, report: JsonDict, output_dir: str, model_name: str, suffix: str = ""
+    ) -> str:
+        output_path = Path(output_dir)
+        output_path.mkdir(parents=True, exist_ok=True)
+        report_path = output_path / f"{model_name}_cubism_profile_calibration{suffix}.json"
+        report_path.write_text(json.dumps(report, indent=2, ensure_ascii=False), encoding="utf-8")
+        return str(report_path)
+
+    def _read_json_artifact(self, artifact_path: str | os.PathLike[str]) -> JsonDict | None:
+        try:
+            loaded = json.loads(Path(artifact_path).read_text(encoding="utf-8"))
+            if isinstance(loaded, dict):
+                return cast(JsonDict, loaded)
+            return None
+        except (OSError, json.JSONDecodeError):
+            return None
+
+    def _titles_from_probe_probe_like(self, probe: Any) -> list[str]:
+        if not isinstance(probe, dict):
+            return []
+        diagnostics = probe.get("diagnostics")
+        titles: list[str] = []
+        if isinstance(diagnostics, list):
+            for item in diagnostics:
+                if isinstance(item, dict):
+                    title = str(item.get("Title", "")).strip()
+                    if title:
+                        titles.append(title)
+        matched_titles = probe.get("matched_titles")
+        if isinstance(matched_titles, list):
+            titles.extend(str(item).strip() for item in matched_titles if str(item).strip())
+        return self._unique_items(titles)
+
+    def _configured_dialog_recovery(self, action: str, profile: JsonDict) -> list[JsonDict]:
+        dialogs_map = dict(profile.get("known_dialog_recovery") or {})
+        selected = dialogs_map.get(action) or dialogs_map.get("default") or []
+        return [entry for entry in selected if isinstance(entry, dict)]
+
+    def _unique_items(self, values: list[str]) -> list[str]:
+        result: list[str] = []
+        for value in values:
+            if value not in result:
+                result.append(value)
+        return result
+
+    def _calibration_suggestions(
+        self,
+        missing_probe_candidates: list[str],
+        action_diagnostics: dict[str, Any],
+    ) -> list[str]:
+        suggestions: list[str] = []
+        if missing_probe_candidates:
+            suggestions.append(
+                "Consider adding these observed window titles to "
+                f"`window_probe_candidates`: {', '.join(missing_probe_candidates)}."
+            )
+        for action, diagnostics in action_diagnostics.items():
+            suggested = diagnostics.get("suggested_dialog_titles", [])
+            if suggested:
+                suggestions.append(
+                    "Consider adding these titles to "
+                    f"`known_dialog_recovery.{action}`: {', '.join(suggested)}."
+                )
+        if not suggestions:
+            suggestions.append(
+                "No new profile suggestions were inferred from this execution. "
+                "If the run still failed, compare the probe diagnostics against "
+                "your local Cubism window titles."
+            )
+        return suggestions
 
     def _execute_native_launch(
         self,
@@ -742,7 +922,9 @@ class CubismAutomationManager:
                 "status": "error",
                 "details": "Editor path is missing.",
             }
-        return self._native_controller.execute_launch(native_controller, editor_path, output_dir)
+        return dict(
+            self._native_controller.execute_launch(native_controller, editor_path, output_dir)
+        )
 
     def _execute_native_controller_apply_template(
         self,
@@ -752,10 +934,12 @@ class CubismAutomationManager:
     ) -> JsonDict | None:
         if native_controller.get("status") != "ready":
             return None
-        return self._native_controller.execute_apply_template(
-            native_controller,
-            template_id,
-            output_dir,
+        return dict(
+            self._native_controller.execute_apply_template(
+                native_controller,
+                template_id,
+                output_dir,
+            )
         )
 
     def _execute_native_controller_export(
@@ -766,10 +950,12 @@ class CubismAutomationManager:
     ) -> JsonDict | None:
         if native_controller.get("status") != "ready":
             return None
-        return self._native_controller.execute_export(
-            native_controller,
-            output_dir,
-            model_name,
+        return dict(
+            self._native_controller.execute_export(
+                native_controller,
+                output_dir,
+                model_name,
+            )
         )
 
     def _execute_native_controller_import(
@@ -786,7 +972,7 @@ class CubismAutomationManager:
                 "status": "error",
                 "details": "PSD path is missing.",
             }
-        return self._native_controller.execute_import(native_controller, psd_path, output_dir)
+        return dict(self._native_controller.execute_import(native_controller, psd_path, output_dir))
 
     def _execute_native_adapter_action(
         self,

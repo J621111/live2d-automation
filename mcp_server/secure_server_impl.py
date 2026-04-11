@@ -612,12 +612,23 @@ async def _execute_cubism_dispatch_impl(session_id: str) -> dict[str, Any]:
     output_dir = Path(str(bundle.get("output_dir", state.get("output_dir") or OUTPUT_ROOT)))
     model_name = str(bundle.get("model_name", "ATRI"))
     execution_path = manager.write_dispatch_execution(execution, str(output_dir), model_name)
-    state["cubism_dispatch_execution"] = {**execution, "execution_path": execution_path}
+    calibration_report = manager.build_profile_calibration_report(bundle, execution)
+    calibration_report_path = manager.write_profile_calibration_report(
+        calibration_report, str(output_dir), model_name
+    )
+    state["cubism_dispatch_execution"] = {
+        **execution,
+        "execution_path": execution_path,
+        "calibration_report": calibration_report,
+        "calibration_report_path": calibration_report_path,
+    }
     return {
         "status": execution.get("status", "error"),
         "session_id": session_id,
         "automation_backend": bundle.get("backend"),
         "execution_path": execution_path,
+        "calibration_report_path": calibration_report_path,
+        "calibration_report": calibration_report,
         "executed_steps": execution.get("executed_steps", []),
         "artifacts": execution.get("artifacts", []),
         "resume": execution.get("resume", {}),
@@ -657,12 +668,26 @@ async def _resume_cubism_dispatch_impl(session_id: str) -> dict[str, Any]:
         model_name,
         suffix="_resume",
     )
-    state["cubism_dispatch_execution"] = {**execution, "execution_path": execution_path}
+    calibration_report = manager.build_profile_calibration_report(bundle, execution)
+    calibration_report_path = manager.write_profile_calibration_report(
+        calibration_report,
+        str(output_dir),
+        model_name,
+        suffix="_resume",
+    )
+    state["cubism_dispatch_execution"] = {
+        **execution,
+        "execution_path": execution_path,
+        "calibration_report": calibration_report,
+        "calibration_report_path": calibration_report_path,
+    }
     return {
         "status": execution.get("status", "error"),
         "session_id": session_id,
         "automation_backend": bundle.get("backend"),
         "execution_path": execution_path,
+        "calibration_report_path": calibration_report_path,
+        "calibration_report": calibration_report,
         "executed_steps": execution.get("executed_steps", []),
         "artifacts": execution.get("artifacts", []),
         "resume": execution.get("resume", {}),
