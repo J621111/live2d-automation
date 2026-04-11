@@ -119,6 +119,25 @@ live2d-run run --image-path ATRI.png --output-dir output/ATRI --editor-path "C:\
 
 `dry_run` writes PowerShell scripts and receipts for `launch_editor` / `import_psd`; `execute` will attempt to run those scripts on Windows using the bundled profile.
 
+The bundled Windows profile now includes conservative seed rules for common dialog recovery during retries:
+
+- `import_psd`: tries `Open` and `Import PSD`
+- `apply_template`: tries `Template` and `Confirm`
+- `export_embedded_data`: tries `Export` and `Overwrite`
+
+Each recovery artifact also records a `dialog_recovery_plan` section so you can see which action-specific or default recovery rules were selected. These seeds are meant to be tuned against your local Cubism window titles before production use.
+
+The built-in probe now also records matched window titles and lightweight diagnostics in the probe artifact. When real Cubism runs do not behave as expected, check the probe JSON first to see which window titles were actually visible to the controller.
+
+Each dispatch execution now also writes a `{model_name}_cubism_profile_calibration*.json` report that summarizes:
+
+- observed probe window titles
+- missing `window_probe_candidates`
+- per-action dialog recovery observations
+- suggested `known_dialog_recovery` additions
+
+Use this report as the primary guide when tuning the built-in Windows profile against a real Cubism installation.
+
 ## Export notes
 
 - The exporter writes a mock intermediate bundle, not a production-ready Live2D runtime model

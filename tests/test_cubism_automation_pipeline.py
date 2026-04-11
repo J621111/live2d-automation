@@ -235,6 +235,7 @@ async def test_execute_cubism_dispatch_runs_native_gui_poc(
         execute_result = await execute_cubism_dispatch(session_id)
         assert execute_result["status"] == "partial"
         assert Path(execute_result["execution_path"]).exists()
+        assert Path(execute_result["calibration_report_path"]).exists()
         assert len(execute_result["executed_steps"]) >= 2
         launch_step = next(
             step
@@ -254,9 +255,13 @@ async def test_execute_cubism_dispatch_runs_native_gui_poc(
         execution_data = json.loads(
             Path(execute_result["execution_path"]).read_text(encoding="utf-8")
         )
+        calibration_data = json.loads(
+            Path(execute_result["calibration_report_path"]).read_text(encoding="utf-8")
+        )
         assert execution_data["backend"] == "native_gui"
         assert execution_data["status"] == "partial"
         assert execution_data["executed_steps"][0]["source_action"] == "launch_editor"
+        assert calibration_data["backend"] == "native_gui"
     finally:
         await close_session(session_id)
 
@@ -1829,3 +1834,453 @@ def test_resume_does_not_skip_prerequisites_when_controller_cannot_probe(
     assert statuses["launch_editor"] == "success"
     assert statuses["import_psd"] == "success"
     assert execution["resume"]["window_probe"] is None
+
+
+def test_native_gui_controller_runs_recovery_before_retry(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    controller = NativeWindowsGUIController()
+    output_dir = tmp_path / "controller_recovery_retry"
+    controller_state = {
+        "status": "ready",
+        "mode": "execute",
+        "profile": {
+            "window_title_contains": "Cubism Editor",
+            "import_shortcut": "^o",
+            "activation_wait_seconds": 0.0,
+            "dialog_wait_seconds": 0.0,
+            "retry_attempts": 1,
+            "retry_backoff_seconds": 0.0,
+            "retry_recovery_sequences": {"default": [{"keys": "{ESC}", "wait_seconds": 0.0}]},
+        },
+    }
+    calls: list[str] = []
+
+    def fake_run(script_path: Path) -> subprocess.CompletedProcess[str]:
+        calls.append(script_path.name)
+        if (
+            script_path.name == "native_gui_builtin_import.ps1"
+            and calls.count(script_path.name) == 1
+        ):
+            return subprocess.CompletedProcess([str(script_path)], 1, "", "first failure")
+        if script_path.name == "native_gui_builtin_import_psd_retry_recovery_attempt_1.ps1":
+            return subprocess.CompletedProcess([str(script_path)], 0, "recovered", "")
+        if script_path.name == "native_gui_builtin_window_probe.ps1":
+            return subprocess.CompletedProcess([str(script_path)], 0, "probe", "")
+        return subprocess.CompletedProcess([str(script_path)], 0, "ok", "")
+
+    monkeypatch.setattr(controller, "_run_powershell", fake_run)
+
+    result = controller.execute_import(controller_state, tmp_path / "demo.psd", output_dir)
+
+    assert result["status"] == "success"
+    assert calls == [
+        "native_gui_builtin_import.ps1",
+        "native_gui_builtin_import_psd_retry_recovery_attempt_1.ps1",
+        "native_gui_builtin_window_probe.ps1",
+        "native_gui_builtin_import.ps1",
+    ]
+    payload = json.loads(Path(result["artifact_path"]).read_text(encoding="utf-8"))
+    recovery = payload["attempts"][0]["recovery"]
+    assert recovery["status"] == "success"
+    assert recovery["probe"]["status"] == "success"
+    script_text = (
+        output_dir / "native_gui_builtin_import_psd_retry_recovery_attempt_1.ps1"
+    ).read_text(encoding="utf-8")
+    assert 'AppActivate("Cubism Editor")' in script_text
+    assert '$wshell.SendKeys("{ESC}")' in script_text
+
+
+def test_native_gui_controller_stops_retry_when_recovery_probe_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    controller = NativeWindowsGUIController()
+    output_dir = tmp_path / "controller_recovery_probe_fail"
+    controller_state = {
+        "status": "ready",
+        "mode": "execute",
+        "profile": {
+            "window_title_contains": "Cubism Editor",
+            "import_shortcut": "^o",
+            "activation_wait_seconds": 0.0,
+            "dialog_wait_seconds": 0.0,
+            "retry_attempts": 1,
+            "retry_backoff_seconds": 0.0,
+            "retry_recovery_sequences": {"default": [{"keys": "{ESC}", "wait_seconds": 0.0}]},
+            "capture_screenshot_on_error": False,
+        },
+    }
+    calls: list[str] = []
+
+    def fake_run(script_path: Path) -> subprocess.CompletedProcess[str]:
+        calls.append(script_path.name)
+        if script_path.name == "native_gui_builtin_import.ps1":
+            return subprocess.CompletedProcess([str(script_path)], 1, "", "first failure")
+        if script_path.name == "native_gui_builtin_import_psd_retry_recovery_attempt_1.ps1":
+            return subprocess.CompletedProcess([str(script_path)], 0, "recovered", "")
+        if script_path.name == "native_gui_builtin_window_probe.ps1":
+            return subprocess.CompletedProcess([str(script_path)], 3, "", "window missing")
+        return subprocess.CompletedProcess([str(script_path)], 0, "ok", "")
+
+    monkeypatch.setattr(controller, "_run_powershell", fake_run)
+
+    result = controller.execute_import(controller_state, tmp_path / "demo.psd", output_dir)
+
+    assert result["status"] == "error"
+    assert calls == [
+        "native_gui_builtin_import.ps1",
+        "native_gui_builtin_import_psd_retry_recovery_attempt_1.ps1",
+        "native_gui_builtin_window_probe.ps1",
+    ]
+    payload = json.loads(Path(result["artifact_path"]).read_text(encoding="utf-8"))
+    assert payload["attempt_count"] == 1
+    assert payload["attempts"][0]["recovery"]["probe"]["status"] == "error"
+
+
+def test_native_gui_controller_stops_retry_after_timeout_when_recovery_probe_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    controller = NativeWindowsGUIController()
+    output_dir = tmp_path / "controller_timeout_probe_fail"
+    controller_state = {
+        "status": "ready",
+        "mode": "execute",
+        "profile": {
+            "window_title_contains": "Cubism Editor",
+            "import_shortcut": "^o",
+            "activation_wait_seconds": 0.0,
+            "dialog_wait_seconds": 0.0,
+            "retry_attempts": 1,
+            "retry_backoff_seconds": 0.0,
+            "retry_recovery_sequences": {"default": [{"keys": "{ESC}", "wait_seconds": 0.0}]},
+            "capture_screenshot_on_error": False,
+        },
+    }
+    calls: list[str] = []
+
+    def fake_run(script_path: Path) -> subprocess.CompletedProcess[str]:
+        calls.append(script_path.name)
+        if script_path.name == "native_gui_builtin_import.ps1":
+            raise subprocess.TimeoutExpired([str(script_path)], 10)
+        if script_path.name == "native_gui_builtin_import_psd_retry_recovery_attempt_1.ps1":
+            return subprocess.CompletedProcess([str(script_path)], 0, "recovered", "")
+        if script_path.name == "native_gui_builtin_window_probe.ps1":
+            return subprocess.CompletedProcess([str(script_path)], 3, "", "window missing")
+        return subprocess.CompletedProcess([str(script_path)], 0, "ok", "")
+
+    monkeypatch.setattr(controller, "_run_powershell", fake_run)
+
+    result = controller.execute_import(controller_state, tmp_path / "demo.psd", output_dir)
+
+    assert result["status"] == "error"
+    assert calls == [
+        "native_gui_builtin_import.ps1",
+        "native_gui_builtin_import_psd_retry_recovery_attempt_1.ps1",
+        "native_gui_builtin_window_probe.ps1",
+    ]
+    payload = json.loads(Path(result["artifact_path"]).read_text(encoding="utf-8"))
+    assert payload["attempt_count"] == 1
+    assert payload["attempts"][0]["timeout"] is True
+    assert payload["attempts"][0]["recovery"]["probe"]["status"] == "error"
+
+
+def test_native_gui_controller_uses_action_specific_recovery_sequence(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    controller = NativeWindowsGUIController()
+    output_dir = tmp_path / "controller_action_specific_recovery"
+    controller_state = {
+        "status": "ready",
+        "mode": "execute",
+        "profile": {
+            "window_title_contains": "Cubism Editor",
+            "import_shortcut": "^o",
+            "activation_wait_seconds": 0.0,
+            "dialog_wait_seconds": 0.0,
+            "retry_attempts": 1,
+            "retry_backoff_seconds": 0.0,
+            "retry_recovery_sequences": {
+                "default": [{"keys": "{ESC}", "wait_seconds": 0.0}],
+                "import_psd": [{"keys": "%{F4}", "wait_seconds": 0.0}],
+            },
+        },
+    }
+
+    def fake_run(script_path: Path) -> subprocess.CompletedProcess[str]:
+        if script_path.name == "native_gui_builtin_import.ps1":
+            return subprocess.CompletedProcess([str(script_path)], 1, "", "first failure")
+        if script_path.name == "native_gui_builtin_import_psd_retry_recovery_attempt_1.ps1":
+            return subprocess.CompletedProcess([str(script_path)], 0, "recovered", "")
+        if script_path.name == "native_gui_builtin_window_probe.ps1":
+            return subprocess.CompletedProcess([str(script_path)], 3, "", "window missing")
+        return subprocess.CompletedProcess([str(script_path)], 0, "ok", "")
+
+    monkeypatch.setattr(controller, "_run_powershell", fake_run)
+
+    controller.execute_import(controller_state, tmp_path / "demo.psd", output_dir)
+
+    script_text = (
+        output_dir / "native_gui_builtin_import_psd_retry_recovery_attempt_1.ps1"
+    ).read_text(encoding="utf-8")
+    assert '$wshell.SendKeys("%{F4}")' in script_text
+    assert '$wshell.SendKeys("{ESC}")' not in script_text
+
+
+def test_native_gui_controller_recovery_script_targets_known_dialogs(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    controller = NativeWindowsGUIController()
+    output_dir = tmp_path / "controller_known_dialog_recovery"
+    controller_state = {
+        "status": "ready",
+        "mode": "execute",
+        "profile": {
+            "window_title_contains": "Cubism Editor",
+            "import_shortcut": "^o",
+            "activation_wait_seconds": 0.0,
+            "dialog_wait_seconds": 0.0,
+            "retry_attempts": 1,
+            "retry_backoff_seconds": 0.0,
+            "retry_recovery_sequences": {"default": [{"keys": "{ESC}", "wait_seconds": 0.0}]},
+            "known_dialog_recovery": {
+                "import_psd": [
+                    {
+                        "title_contains": "Import PSD",
+                        "keys": "%y",
+                        "wait_seconds": 0.0,
+                    }
+                ]
+            },
+            "capture_screenshot_on_error": False,
+        },
+    }
+
+    calls: list[str] = []
+
+    def fake_run(script_path: Path) -> subprocess.CompletedProcess[str]:
+        calls.append(script_path.name)
+        if (
+            script_path.name == "native_gui_builtin_import.ps1"
+            and calls.count(script_path.name) == 1
+        ):
+            return subprocess.CompletedProcess([str(script_path)], 1, "", "first failure")
+        if script_path.name == "native_gui_builtin_import_psd_retry_recovery_attempt_1.ps1":
+            return subprocess.CompletedProcess([str(script_path)], 0, "recovered", "")
+        if script_path.name == "native_gui_builtin_window_probe.ps1":
+            return subprocess.CompletedProcess([str(script_path)], 0, "probe", "")
+        return subprocess.CompletedProcess([str(script_path)], 0, "ok", "")
+
+    monkeypatch.setattr(controller, "_run_powershell", fake_run)
+
+    result = controller.execute_import(controller_state, tmp_path / "demo.psd", output_dir)
+
+    assert result["status"] == "success"
+    script_text = (
+        output_dir / "native_gui_builtin_import_psd_retry_recovery_attempt_1.ps1"
+    ).read_text(encoding="utf-8")
+    assert "function Invoke-DialogRecovery" in script_text
+    assert 'TitleFragment "Import PSD"' in script_text
+    assert "$wshell.AppActivate($process.Id)" in script_text
+    assert 'Invoke-DialogRecovery -TitleFragment "Import PSD" -Keys "%y"' in script_text
+    assert 'if (-not $wshell.AppActivate("Cubism Editor")) { exit 3 }' in script_text
+    payload = json.loads(Path(result["artifact_path"]).read_text(encoding="utf-8"))
+    plan = payload["attempts"][0]["recovery"]["dialog_recovery_plan"]
+    assert plan["dialog_source"] == "import_psd"
+    assert plan["sequence_source"] == "default"
+    assert plan["dialogs"][0]["title_contains"] == "Import PSD"
+    assert plan["sequences"][0]["keys"] == "{ESC}"
+
+
+def test_native_gui_controller_prefers_action_specific_dialog_recovery(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    controller = NativeWindowsGUIController()
+    output_dir = tmp_path / "controller_action_dialog_recovery"
+    controller_state = {
+        "status": "ready",
+        "mode": "execute",
+        "profile": {
+            "window_title_contains": "Cubism Editor",
+            "import_shortcut": "^o",
+            "activation_wait_seconds": 0.0,
+            "dialog_wait_seconds": 0.0,
+            "retry_attempts": 1,
+            "retry_backoff_seconds": 0.0,
+            "retry_recovery_sequences": {"default": [{"keys": "{ESC}", "wait_seconds": 0.0}]},
+            "known_dialog_recovery": {
+                "default": [
+                    {"title_contains": "Generic Dialog", "keys": "{ENTER}", "wait_seconds": 0.0}
+                ],
+                "import_psd": [{"title_contains": "Import PSD", "keys": "%y", "wait_seconds": 0.0}],
+            },
+            "capture_screenshot_on_error": False,
+        },
+    }
+
+    def fake_run(script_path: Path) -> subprocess.CompletedProcess[str]:
+        if script_path.name == "native_gui_builtin_import.ps1":
+            return subprocess.CompletedProcess([str(script_path)], 1, "", "first failure")
+        if script_path.name == "native_gui_builtin_import_psd_retry_recovery_attempt_1.ps1":
+            return subprocess.CompletedProcess([str(script_path)], 0, "recovered", "")
+        if script_path.name == "native_gui_builtin_window_probe.ps1":
+            return subprocess.CompletedProcess([str(script_path)], 3, "", "window missing")
+        return subprocess.CompletedProcess([str(script_path)], 0, "ok", "")
+
+    monkeypatch.setattr(controller, "_run_powershell", fake_run)
+
+    controller.execute_import(controller_state, tmp_path / "demo.psd", output_dir)
+
+    script_text = (
+        output_dir / "native_gui_builtin_import_psd_retry_recovery_attempt_1.ps1"
+    ).read_text(encoding="utf-8")
+    assert 'TitleFragment "Import PSD"' in script_text
+    assert 'TitleFragment "Generic Dialog"' not in script_text
+    payload = json.loads(
+        (output_dir / "native_gui_builtin_import_result.json").read_text(encoding="utf-8")
+    )
+    assert (
+        payload["attempts"][0]["recovery"]["dialog_recovery_plan"]["dialog_source"] == "import_psd"
+    )
+
+
+def test_default_windows_profile_contains_seed_dialog_recovery_rules() -> None:
+    profile = json.loads(
+        (
+            Path(__file__).resolve().parent.parent
+            / "mcp_server"
+            / "profiles"
+            / "windows_cubism_default.json"
+        ).read_text(encoding="utf-8")
+    )
+
+    known_dialog_recovery = profile["known_dialog_recovery"]
+    assert known_dialog_recovery["import_psd"]
+    assert known_dialog_recovery["apply_template"]
+    assert known_dialog_recovery["export_embedded_data"]
+    assert known_dialog_recovery["import_psd"][0]["title_contains"] == "Open"
+    assert "Import PSD" in profile["window_probe_candidates"]
+
+
+def test_probe_window_captures_window_diagnostics(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    controller = NativeWindowsGUIController()
+    controller_state = {
+        "status": "ready",
+        "mode": "execute",
+        "profile": {
+            "window_title_contains": "Cubism Editor",
+            "window_probe_candidates": ["Import PSD", "Export"],
+            "import_shortcut": "^o",
+        },
+    }
+    probe_payload = {
+        "target": "Cubism Editor",
+        "matched_titles": ["Cubism Editor", "Import PSD"],
+        "diagnostics": [
+            {
+                "ProcessId": 101,
+                "ProcessName": "CubismEditor5",
+                "Title": "Cubism Editor",
+            },
+            {
+                "ProcessId": 202,
+                "ProcessName": "CubismEditor5",
+                "Title": "Import PSD",
+            },
+        ],
+    }
+
+    monkeypatch.setattr(
+        controller,
+        "_run_powershell",
+        lambda script_path: subprocess.CompletedProcess(
+            [str(script_path)], 0, json.dumps(probe_payload), ""
+        ),
+    )
+
+    result = controller.probe_window(controller_state, tmp_path)
+
+    assert result is not None
+    assert result["status"] == "success"
+    assert result["diagnostics"][0]["Title"] == "Cubism Editor"
+    payload = json.loads(Path(result["artifact_path"]).read_text(encoding="utf-8"))
+    assert payload["matched_titles"] == ["Cubism Editor", "Import PSD"]
+    assert payload["target"] == "Cubism Editor"
+
+
+def test_profile_calibration_report_collects_probe_and_dialog_suggestions(
+    tmp_path: Path,
+) -> None:
+    manager = CubismAutomationManager()
+    output_dir = tmp_path / "calibration"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    recovery_artifact = output_dir / "native_gui_builtin_import_result.json"
+    recovery_artifact.write_text(
+        json.dumps(
+            {
+                "attempts": [
+                    {
+                        "attempt": 1,
+                        "returncode": 1,
+                        "recovery": {
+                            "dialog_recovery_plan": {
+                                "dialog_source": "import_psd",
+                                "dialogs": [{"title_contains": "Import PSD", "keys": "%y"}],
+                                "sequence_source": "default",
+                                "sequences": [{"keys": "{ESC}"}],
+                            },
+                            "probe": {
+                                "matched_titles": ["Cubism Editor", "PSD Import"],
+                                "diagnostics": [
+                                    {"Title": "Cubism Editor"},
+                                    {"Title": "PSD Import"},
+                                ],
+                            },
+                        },
+                    }
+                ]
+            },
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+    bundle = {
+        "backend": "native_gui",
+        "model_name": "DiagCase",
+        "native_controller": {
+            "profile": {
+                "window_title_contains": "Cubism Editor",
+                "window_probe_candidates": ["Cubism Editor", "Open"],
+                "known_dialog_recovery": {
+                    "import_psd": [{"title_contains": "Import PSD", "keys": "%y"}]
+                },
+            }
+        },
+    }
+    execution = {
+        "resume": {
+            "window_probe": {
+                "matched_titles": ["Cubism Editor", "PSD Import"],
+                "diagnostics": [
+                    {"Title": "Cubism Editor"},
+                    {"Title": "PSD Import"},
+                ],
+            }
+        },
+        "executed_steps": [
+            {
+                "source_action": "import_psd",
+                "status": "error",
+                "artifact_path": str(recovery_artifact),
+            }
+        ],
+    }
+
+    report = manager.build_profile_calibration_report(bundle, execution)
+
+    assert report["status"] == "ready"
+    assert "PSD Import" in report["observed_titles"]
+    assert "PSD Import" in report["missing_probe_candidates"]
+    assert report["action_diagnostics"]["import_psd"]["configured_dialog_titles"] == ["Import PSD"]
+    assert any("window_probe_candidates" in suggestion for suggestion in report["suggestions"])
