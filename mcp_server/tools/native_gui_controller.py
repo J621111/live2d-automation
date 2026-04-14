@@ -166,6 +166,12 @@ class NativeWindowsGUIController:
             "returncode": payload.get("returncode"),
             "timed_out": payload.get("timed_out", False),
             **({"diagnostics": payload["diagnostics"]} if "diagnostics" in payload else {}),
+            **({"all_titles": payload["all_titles"]} if "all_titles" in payload else {}),
+            **(
+                {"all_diagnostics": payload["all_diagnostics"]}
+                if "all_diagnostics" in payload
+                else {}
+            ),
         }
 
     def execute_export(self, controller: JsonDict, output_dir: Path, model_name: str) -> JsonDict:
@@ -657,6 +663,8 @@ class NativeWindowsGUIController:
             f'    target = "{self._escape_powershell_string(title)}"\n'
             "    matched_titles = @($diagnosticWindows | ForEach-Object { $_.Title })\n"
             "    diagnostics = @($diagnosticWindows)\n"
+            "    all_titles = @($windows | ForEach-Object { $_.Title })\n"
+            "    all_diagnostics = @($windows)\n"
             "}\n"
             "$result | ConvertTo-Json -Depth 4 -Compress | Write-Output\n"
             "if ($activated) { exit 0 } else { exit 3 }\n"
@@ -680,6 +688,10 @@ class NativeWindowsGUIController:
             extracted["matched_titles"] = parsed["matched_titles"]
         if "diagnostics" in parsed and isinstance(parsed["diagnostics"], list):
             extracted["diagnostics"] = parsed["diagnostics"]
+        if "all_titles" in parsed and isinstance(parsed["all_titles"], list):
+            extracted["all_titles"] = parsed["all_titles"]
+        if "all_diagnostics" in parsed and isinstance(parsed["all_diagnostics"], list):
+            extracted["all_diagnostics"] = parsed["all_diagnostics"]
         if "target" in parsed:
             extracted["target"] = parsed["target"]
         return extracted

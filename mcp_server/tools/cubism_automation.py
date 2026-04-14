@@ -574,6 +574,8 @@ class CubismAutomationManager:
             "configured_window_probe_candidates": probe_candidates,
             "observed_titles": [],
             "resume_probe_titles": [],
+            "visible_window_titles": [],
+            "likely_window_titles": [],
             "missing_probe_candidates": [],
             "action_diagnostics": {},
             "suggestions": [],
@@ -587,9 +589,11 @@ class CubismAutomationManager:
             return report
 
         observed_titles: list[str] = []
+        visible_titles: list[str] = []
         resume_probe = dict(execution.get("resume", {}).get("window_probe") or {})
         resume_titles = self._titles_from_probe_probe_like(resume_probe)
         observed_titles.extend(resume_titles)
+        visible_titles.extend(self._all_titles_from_probe_probe_like(resume_probe))
         report["resume_probe_titles"] = resume_titles
 
         action_diagnostics: dict[str, Any] = {}
@@ -616,6 +620,7 @@ class CubismAutomationManager:
                 if isinstance(plan, dict):
                     recovery_plans.append(plan)
                 action_titles.extend(self._titles_from_probe_probe_like(recovery.get("probe")))
+                visible_titles.extend(self._all_titles_from_probe_probe_like(recovery.get("probe")))
             if not action_titles and not recovery_plans:
                 continue
             observed_titles.extend(action_titles)
@@ -651,13 +656,23 @@ class CubismAutomationManager:
         unique_observed = self._unique_items(
             [title for title in observed_titles if title and title != target_title]
         )
+        unique_visible = self._unique_items(
+            [title for title in visible_titles if title and title != target_title]
+        )
+        likely_window_titles = self._likely_window_titles(unique_visible)
         report["observed_titles"] = unique_observed
+        report["visible_window_titles"] = unique_visible
+        report["likely_window_titles"] = likely_window_titles
         report["missing_probe_candidates"] = [
-            title for title in unique_observed if title not in probe_candidates
+            title
+            for title in (unique_observed or likely_window_titles)
+            if title not in probe_candidates
         ]
         report["action_diagnostics"] = action_diagnostics
         report["suggestions"] = self._calibration_suggestions(
-            report["missing_probe_candidates"], action_diagnostics
+            report["missing_probe_candidates"],
+            action_diagnostics,
+            likely_window_titles,
         )
         return report
 
@@ -695,6 +710,37 @@ class CubismAutomationManager:
             titles.extend(str(item).strip() for item in matched_titles if str(item).strip())
         return self._unique_items(titles)
 
+    def _all_titles_from_probe_probe_like(self, probe: Any) -> list[str]:
+        if not isinstance(probe, dict):
+            return []
+        titles = self._titles_from_probe_probe_like(probe)
+        diagnostics = probe.get("all_diagnostics")
+        if isinstance(diagnostics, list):
+            for item in diagnostics:
+                if isinstance(item, dict):
+                    title = str(item.get("Title", "")).strip()
+                    if title:
+                        titles.append(title)
+        all_titles = probe.get("all_titles")
+        if isinstance(all_titles, list):
+            titles.extend(str(item).strip() for item in all_titles if str(item).strip())
+        return self._unique_items(titles)
+
+    def _likely_window_titles(self, values: list[str]) -> list[str]:
+        keywords = (
+            "cubism",
+            "live2d",
+            "editor",
+            "import",
+            "open",
+            "template",
+            "confirm",
+            "export",
+            "overwrite",
+            "psd",
+        )
+        return [value for value in values if any(keyword in value.lower() for keyword in keywords)]
+
     def _configured_dialog_recovery(self, action: str, profile: JsonDict) -> list[JsonDict]:
         dialogs_map = dict(profile.get("known_dialog_recovery") or {})
         selected = dialogs_map.get(action) or dialogs_map.get("default") or []
@@ -711,12 +757,18 @@ class CubismAutomationManager:
         self,
         missing_probe_candidates: list[str],
         action_diagnostics: dict[str, Any],
+        likely_window_titles: list[str],
     ) -> list[str]:
         suggestions: list[str] = []
         if missing_probe_candidates:
             suggestions.append(
                 "Consider adding these observed window titles to "
                 f"`window_probe_candidates`: {', '.join(missing_probe_candidates)}."
+            )
+        elif likely_window_titles:
+            suggestions.append(
+                "Probe did not match the current `window_title_contains`, but these visible "
+                f"window titles look relevant: {', '.join(likely_window_titles)}."
             )
         for action, diagnostics in action_diagnostics.items():
             suggested = diagnostics.get("suggested_dialog_titles", [])
