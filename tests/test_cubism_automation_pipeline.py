@@ -2189,6 +2189,24 @@ def test_probe_window_captures_window_diagnostics(
                 "Title": "Import PSD",
             },
         ],
+        "all_titles": ["Cubism Editor", "Import PSD", "Live2D Cubism 5.3"],
+        "all_diagnostics": [
+            {
+                "ProcessId": 101,
+                "ProcessName": "CubismEditor5",
+                "Title": "Cubism Editor",
+            },
+            {
+                "ProcessId": 202,
+                "ProcessName": "CubismEditor5",
+                "Title": "Import PSD",
+            },
+            {
+                "ProcessId": 303,
+                "ProcessName": "CubismEditor5",
+                "Title": "Live2D Cubism 5.3",
+            },
+        ],
     }
 
     monkeypatch.setattr(
@@ -2204,8 +2222,10 @@ def test_probe_window_captures_window_diagnostics(
     assert result is not None
     assert result["status"] == "success"
     assert result["diagnostics"][0]["Title"] == "Cubism Editor"
+    assert "Live2D Cubism 5.3" in result["all_titles"]
     payload = json.loads(Path(result["artifact_path"]).read_text(encoding="utf-8"))
     assert payload["matched_titles"] == ["Cubism Editor", "Import PSD"]
+    assert "Live2D Cubism 5.3" in payload["all_titles"]
     assert payload["target"] == "Cubism Editor"
 
 
@@ -2235,6 +2255,11 @@ def test_profile_calibration_report_collects_probe_and_dialog_suggestions(
                                 "diagnostics": [
                                     {"Title": "Cubism Editor"},
                                     {"Title": "PSD Import"},
+                                ],
+                                "all_titles": [
+                                    "Cubism Editor",
+                                    "PSD Import",
+                                    "Live2D Cubism 5.3",
                                 ],
                             },
                         },
@@ -2266,6 +2291,11 @@ def test_profile_calibration_report_collects_probe_and_dialog_suggestions(
                     {"Title": "Cubism Editor"},
                     {"Title": "PSD Import"},
                 ],
+                "all_titles": [
+                    "Cubism Editor",
+                    "PSD Import",
+                    "Live2D Cubism 5.3",
+                ],
             }
         },
         "executed_steps": [
@@ -2281,6 +2311,47 @@ def test_profile_calibration_report_collects_probe_and_dialog_suggestions(
 
     assert report["status"] == "ready"
     assert "PSD Import" in report["observed_titles"]
+    assert "Live2D Cubism 5.3" in report["visible_window_titles"]
+    assert "Live2D Cubism 5.3" in report["likely_window_titles"]
     assert "PSD Import" in report["missing_probe_candidates"]
     assert report["action_diagnostics"]["import_psd"]["configured_dialog_titles"] == ["Import PSD"]
+    assert any("window_probe_candidates" in suggestion for suggestion in report["suggestions"])
+
+
+def test_profile_calibration_report_surfaces_likely_titles_when_probe_target_misses(
+    tmp_path: Path,
+) -> None:
+    manager = CubismAutomationManager()
+    bundle = {
+        "backend": "native_gui",
+        "model_name": "DiagMiss",
+        "native_controller": {
+            "profile": {
+                "window_title_contains": "Cubism Editor",
+                "window_probe_candidates": ["Cubism Editor"],
+                "known_dialog_recovery": {},
+            }
+        },
+    }
+    execution = {
+        "resume": {
+            "window_probe": {
+                "matched_titles": [],
+                "diagnostics": [],
+                "all_titles": [
+                    "Live2D Cubism 5.3",
+                    "PSD Import",
+                    "Visual Studio Code",
+                ],
+            }
+        },
+        "executed_steps": [],
+    }
+
+    report = manager.build_profile_calibration_report(bundle, execution)
+
+    assert report["observed_titles"] == []
+    assert "Live2D Cubism 5.3" in report["visible_window_titles"]
+    assert "PSD Import" in report["likely_window_titles"]
+    assert "Live2D Cubism 5.3" in report["missing_probe_candidates"]
     assert any("window_probe_candidates" in suggestion for suggestion in report["suggestions"])
