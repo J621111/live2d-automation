@@ -11,8 +11,9 @@
     "Overwrite"
   ],
   "import_shortcut": "^o",
-  "template_shortcut": "^+t",
-  "export_shortcut": "^+e",
+  "import_via_launch_argument": true,
+  "template_menu_sequence": [],
+  "export_shortcut": "^%s",
   "launch_wait_seconds": 2.0,
   "activation_wait_seconds": 1.0,
   "dialog_wait_seconds": 0.8,

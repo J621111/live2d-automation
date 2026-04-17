@@ -403,6 +403,7 @@ class CubismAutomationManager:
         )
         if resume_probe and resume_probe.get("artifact_path"):
             artifacts.append(str(resume_probe["artifact_path"]))
+        halted_after_error = False
         for step in bundle.get("dispatch_steps", []):
             action = str(step.get("source_action", ""))
             can_skip = action in previous_successes and self._can_skip_resumed_action(
@@ -420,6 +421,22 @@ class CubismAutomationManager:
                     ),
                 }
                 step_statuses[action] = "success"
+            elif halted_after_error:
+                result = {
+                    "step": step.get("step"),
+                    "source_action": action,
+                    "status": "pending",
+                    "details": "Skipped because a previous automation step failed.",
+                }
+            elif action == "launch_editor" and self._should_defer_native_launch_to_import(
+                native_controller
+            ):
+                result = {
+                    "step": step.get("step"),
+                    "source_action": action,
+                    "status": "success",
+                    "details": "Launch is deferred to import_psd via direct document open.",
+                }
             elif action == "launch_editor":
                 result = self._execute_native_launch(
                     editor_path, output_dir, native_controller, native_adapter, bundle
@@ -460,6 +477,8 @@ class CubismAutomationManager:
             artifact_path = result.get("artifact_path")
             if artifact_path:
                 artifacts.append(str(artifact_path))
+            if result.get("status") == "error":
+                halted_after_error = True
 
         failed = [step for step in executed_steps if step.get("status") == "error"]
         recorded = [step for step in executed_steps if step.get("status") == "recorded"]
@@ -517,6 +536,14 @@ class CubismAutomationManager:
         if native_controller.get("status") != "ready" or native_controller.get("mode") != "execute":
             return False
         return bool(resume_probe and resume_probe.get("status") == "success")
+
+    def _should_defer_native_launch_to_import(self, native_controller: JsonDict) -> bool:
+        if native_controller.get("status") != "ready":
+            return False
+        if native_controller.get("mode") != "execute":
+            return False
+        profile = dict(native_controller.get("profile") or {})
+        return bool(profile.get("import_via_launch_argument", True))
 
     def _resume_successes(self, execution: JsonDict | None) -> set[str]:
         if not execution:
@@ -913,20 +940,21 @@ class CubismAutomationManager:
                 "details": "PSD path is missing.",
             }
 
-        controller_result = self._execute_native_controller_import(
-            native_controller,
-            psd_path,
-            output_dir,
-        )
-        if controller_result is not None:
-            return controller_result
-
         editor_info = dict(bundle.get("editor", {}))
         editor_path = (
             Path(str(editor_info.get("editor_path", "")))
             if editor_info.get("editor_path")
             else None
         )
+        controller_result = self._execute_native_controller_import(
+            native_controller,
+            psd_path,
+            output_dir,
+            editor_path,
+        )
+        if controller_result is not None:
+            return controller_result
+
         adapter_result = self._execute_native_adapter_action(
             native_adapter,
             action="import_psd",
@@ -1015,6 +1043,7 @@ class CubismAutomationManager:
         native_controller: JsonDict,
         psd_path: Path | None,
         output_dir: Path,
+        editor_path: Path | None,
     ) -> JsonDict | None:
         if native_controller.get("status") != "ready":
             return None
@@ -1024,7 +1053,14 @@ class CubismAutomationManager:
                 "status": "error",
                 "details": "PSD path is missing.",
             }
-        return dict(self._native_controller.execute_import(native_controller, psd_path, output_dir))
+        return dict(
+            self._native_controller.execute_import(
+                native_controller,
+                psd_path,
+                output_dir,
+                editor_path=editor_path,
+            )
+        )
 
     def _execute_native_adapter_action(
         self,
