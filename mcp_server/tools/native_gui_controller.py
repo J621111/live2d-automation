@@ -94,20 +94,47 @@ class NativeWindowsGUIController:
             recorded_details="Recorded a built-in controller launch script.",
         )
 
-    def execute_import(self, controller: JsonDict, psd_path: Path, output_dir: Path) -> JsonDict:
+    def execute_import(
+        self,
+        controller: JsonDict,
+        psd_path: Path,
+        output_dir: Path,
+        editor_path: Path | None = None,
+    ) -> JsonDict:
         profile = dict(controller.get("profile") or {})
+        use_launch_argument = bool(profile.get("import_via_launch_argument", True) and editor_path)
+        post_success_check = None
+        if use_launch_argument:
+            assert editor_path is not None
+            script = self._import_via_launch_argument_script(editor_path, psd_path, profile)
+
+            def _post_success_check() -> JsonDict:
+                return self._await_window_title_fragment(
+                    output_dir=output_dir,
+                    profile=profile,
+                    fragment=psd_path.stem,
+                    stem="native_gui_builtin_import_psd_title_check",
+                )
+
+            post_success_check = _post_success_check
+        else:
+            script = self._import_script(psd_path, profile)
         return self._execute_action(
             controller=controller,
             output_dir=output_dir,
             source_action="import_psd",
             script_stem="native_gui_builtin_import",
-            script=self._import_script(psd_path, profile),
+            script=script,
             dry_run_payload={
                 "psd_path": str(psd_path),
+                "editor_path": str(editor_path) if editor_path else None,
+                "import_via_launch_argument": use_launch_argument,
                 "profile": profile,
             },
             success_details="Executed built-in controller import workflow.",
             recorded_details="Recorded a built-in controller import script.",
+            post_success_check=post_success_check,
+            capture_on_success=True,
         )
 
     def execute_apply_template(
@@ -117,6 +144,15 @@ class NativeWindowsGUIController:
         output_dir: Path,
     ) -> JsonDict:
         profile = dict(controller.get("profile") or {})
+        if controller.get("mode") == "execute" and not self._has_apply_template_invocation(profile):
+            return {
+                "source_action": "apply_template",
+                "status": "error",
+                "details": (
+                    "Apply-template automation requires a configured template menu sequence "
+                    "or explicit template shortcut in the native GUI profile."
+                ),
+            }
         return self._execute_action(
             controller=controller,
             output_dir=output_dir,
@@ -129,6 +165,7 @@ class NativeWindowsGUIController:
             },
             success_details="Executed built-in controller template workflow.",
             recorded_details="Recorded a built-in controller template-application script.",
+            capture_on_success=True,
         )
 
     def probe_window(self, controller: JsonDict, output_dir: Path) -> JsonDict | None:
@@ -189,6 +226,8 @@ class NativeWindowsGUIController:
             },
             success_details="Executed built-in controller export workflow.",
             recorded_details="Recorded a built-in controller export script.",
+            post_success_check=lambda: self._await_export_outputs(output_dir, model_name, profile),
+            capture_on_success=True,
         )
 
     def _execute_action(
@@ -202,6 +241,8 @@ class NativeWindowsGUIController:
         dry_run_payload: JsonDict,
         success_details: str,
         recorded_details: str,
+        post_success_check: Any | None = None,
+        capture_on_success: bool = False,
     ) -> JsonDict:
         output_dir.mkdir(parents=True, exist_ok=True)
         script_path = output_dir / f"{script_stem}.ps1"
@@ -306,6 +347,27 @@ class NativeWindowsGUIController:
             "attempts": attempts,
             "timed_out": timed_out,
         }
+        if final_returncode == 0 and callable(post_success_check):
+            post_check = post_success_check()
+            payload["post_success_check"] = post_check
+            if post_check.get("status") != "success":
+                final_returncode = 2
+                payload["returncode"] = final_returncode
+                payload["stderr"] = str(
+                    post_check.get("details", "Post-success validation failed.")
+                )
+                final_stderr = payload["stderr"]
+        if final_returncode == 0 and capture_on_success:
+            payload["post_action_probe"] = self._capture_post_action_probe(
+                source_action=source_action,
+                output_dir=output_dir,
+                profile=profile,
+            )
+            payload["success_capture"] = self._capture_success_context(
+                source_action=source_action,
+                output_dir=output_dir,
+                profile=profile,
+            )
         if final_returncode != 0:
             payload["failure_capture"] = self._capture_failure_context(
                 source_action=source_action,
@@ -385,10 +447,13 @@ class NativeWindowsGUIController:
         return recovery
 
     def _retry_recovery_script(self, source_action: str, profile: JsonDict) -> str:
-        title = str(profile.get("window_title_contains", "Cubism Editor"))
+        fragments = self._activation_fragments(profile)
+        fragment_json = json.dumps(fragments, ensure_ascii=False).replace('"', '`"')
         entries = self._retry_recovery_sequences(source_action, profile)
         lines = [
             '$ErrorActionPreference = "Stop"\n',
+            self._window_activation_helper_script(profile),
+            f'$activationFragments = ConvertFrom-Json "{fragment_json}"\n',
             "function Invoke-DialogRecovery {\n",
             "    param(\n",
             "        [string]$TitleFragment,\n",
@@ -410,8 +475,9 @@ class NativeWindowsGUIController:
             "    }\n",
             "    $wshell.SendKeys($Keys)\n",
             "}\n",
+            "$windowState = Activate-ControllerWindow -Fragments $activationFragments\n",
+            "if (-not $windowState.Activated) { exit 3 }\n",
             "$wshell = New-Object -ComObject WScript.Shell\n",
-            f'if (-not $wshell.AppActivate("{title}")) {{ exit 3 }}\n',
         ]
         for dialog in self._retry_recovery_dialogs(source_action, profile):
             wait_ms = int(float(dialog.get("wait_seconds", 0.2)) * 1000)
@@ -425,7 +491,10 @@ class NativeWindowsGUIController:
                 f'-Keys "{escaped_keys}" '
                 f"-WaitMilliseconds {wait_ms}\n"
             )
-            lines.append(f'if (-not $wshell.AppActivate("{title}")) {{ exit 3 }}\n')
+            lines.append(
+                "$windowState = Activate-ControllerWindow -Fragments $activationFragments\n"
+            )
+            lines.append("if (-not $windowState.Activated) { exit 3 }\n")
         for entry in entries:
             if not isinstance(entry, dict):
                 continue
@@ -518,6 +587,206 @@ class NativeWindowsGUIController:
             "returncode": completed.returncode,
         }
 
+    def _capture_success_context(
+        self,
+        *,
+        source_action: str,
+        output_dir: Path,
+        profile: JsonDict,
+    ) -> JsonDict:
+        if profile.get("capture_screenshot_on_success", True) is False:
+            return {
+                "status": "disabled",
+                "details": "Success screenshot capture is disabled in the controller profile.",
+            }
+
+        stem = f"native_gui_builtin_{source_action}_success_capture"
+        script_path = output_dir / f"{stem}.ps1"
+        screenshot_path = output_dir / f"{stem}.png"
+        artifact_path = output_dir / f"{stem}.json"
+        script_path.write_text(
+            self._capture_script(
+                screenshot_path,
+                profile,
+                wait_key="success_capture_wait_seconds",
+            ),
+            encoding="utf-8",
+        )
+        completed = self._run_powershell(script_path)
+        payload: JsonDict = {
+            "script_path": str(script_path),
+            "screenshot_path": str(screenshot_path),
+            "returncode": completed.returncode,
+            "stdout": completed.stdout.strip(),
+            "stderr": completed.stderr.strip(),
+        }
+        artifact_path.write_text(
+            json.dumps(payload, indent=2, ensure_ascii=False),
+            encoding="utf-8",
+        )
+        return {
+            "status": "success" if completed.returncode == 0 else "error",
+            "artifact_path": str(artifact_path),
+            "script_path": str(script_path),
+            "screenshot_path": str(screenshot_path),
+            "returncode": completed.returncode,
+        }
+
+    def _capture_post_action_probe(
+        self,
+        *,
+        source_action: str,
+        output_dir: Path,
+        profile: JsonDict,
+    ) -> JsonDict:
+        stem = f"native_gui_builtin_{source_action}_post_probe"
+        script_path = output_dir / f"{stem}.ps1"
+        artifact_path = output_dir / f"{stem}.json"
+        script_path.write_text(self._window_probe_script(profile), encoding="utf-8")
+        try:
+            completed = self._run_powershell(script_path)
+            payload: JsonDict = {
+                "script_path": str(script_path),
+                "returncode": completed.returncode,
+                "stdout": completed.stdout.strip(),
+                "stderr": completed.stderr.strip(),
+            }
+            payload.update(self._parse_probe_stdout(payload["stdout"]))
+        except subprocess.TimeoutExpired as exc:
+            payload = {
+                "script_path": str(script_path),
+                "returncode": None,
+                "stdout": "",
+                "stderr": f"Timed out after {exc.timeout} seconds.",
+                "timed_out": True,
+            }
+        artifact_path.write_text(
+            json.dumps(payload, indent=2, ensure_ascii=False),
+            encoding="utf-8",
+        )
+        return {
+            "status": "success" if payload.get("returncode") == 0 else "error",
+            "artifact_path": str(artifact_path),
+            "script_path": str(script_path),
+            "returncode": payload.get("returncode"),
+            "timed_out": payload.get("timed_out", False),
+            **(
+                {"matched_titles": payload["matched_titles"]} if "matched_titles" in payload else {}
+            ),
+            **({"all_titles": payload["all_titles"]} if "all_titles" in payload else {}),
+        }
+
+    def _await_export_outputs(
+        self,
+        output_dir: Path,
+        model_name: str,
+        profile: JsonDict,
+    ) -> JsonDict:
+        timeout_seconds = max(0.0, float(profile.get("export_output_timeout_seconds", 6.0)))
+        poll_seconds = max(0.05, float(profile.get("export_output_poll_seconds", 0.25)))
+        deadline = time.time() + timeout_seconds
+        moc3_path = output_dir / f"{model_name}.moc3"
+        model3_path = output_dir / "model3.json"
+        textures_dir = output_dir / "textures"
+        while time.time() <= deadline:
+            if moc3_path.exists() and model3_path.exists() and textures_dir.exists():
+                return {
+                    "status": "success",
+                    "details": "Detected exported Cubism files in the target output directory.",
+                    "observed": {
+                        "moc3": str(moc3_path),
+                        "model3": str(model3_path),
+                        "textures_dir": str(textures_dir),
+                    },
+                }
+            time.sleep(poll_seconds)
+        missing: list[str] = []
+        if not moc3_path.exists():
+            missing.append("moc3")
+        if not model3_path.exists():
+            missing.append("model3")
+        if not textures_dir.exists():
+            missing.append("textures_dir")
+        return {
+            "status": "error",
+            "details": (
+                "Export command finished, but the expected files did not appear in the target "
+                f"directory: {', '.join(missing)}."
+            ),
+            "missing": missing,
+        }
+
+    def _await_window_title_fragment(
+        self,
+        *,
+        output_dir: Path,
+        profile: JsonDict,
+        fragment: str,
+        stem: str,
+    ) -> JsonDict:
+        timeout_seconds = max(0.0, float(profile.get("document_window_timeout_seconds", 8.0)))
+        poll_seconds = max(0.05, float(profile.get("document_window_poll_seconds", 0.25)))
+        deadline = time.time() + timeout_seconds
+        script_path = output_dir / f"{stem}.ps1"
+        artifact_path = output_dir / f"{stem}.json"
+        target_fragment = fragment.strip()
+        while time.time() <= deadline:
+            script_path.write_text(
+                self._window_probe_script(profile, extra_fragments=[target_fragment]),
+                encoding="utf-8",
+            )
+            try:
+                completed = self._run_powershell(script_path)
+                payload: JsonDict = {
+                    "script_path": str(script_path),
+                    "returncode": completed.returncode,
+                    "stdout": completed.stdout.strip(),
+                    "stderr": completed.stderr.strip(),
+                }
+                payload.update(self._parse_probe_stdout(payload["stdout"]))
+            except subprocess.TimeoutExpired as exc:
+                payload = {
+                    "script_path": str(script_path),
+                    "returncode": None,
+                    "stdout": "",
+                    "stderr": f"Timed out after {exc.timeout} seconds.",
+                    "timed_out": True,
+                }
+            artifact_path.write_text(
+                json.dumps(payload, indent=2, ensure_ascii=False),
+                encoding="utf-8",
+            )
+            matched_titles = []
+            for entry in payload.get("all_diagnostics", []):
+                if not isinstance(entry, dict):
+                    continue
+                title = str(entry.get("Title", ""))
+                process_name = str(entry.get("ProcessName", "")).lower()
+                title_lower = title.lower()
+                if target_fragment.lower() not in title_lower:
+                    continue
+                if "cubism" in title_lower or "editor" in title_lower or process_name == "java":
+                    matched_titles.append(title)
+            if matched_titles:
+                return {
+                    "status": "success",
+                    "details": (
+                        f"Detected a Cubism window containing '{target_fragment}' after import."
+                    ),
+                    "artifact_path": str(artifact_path),
+                    "matched_titles": matched_titles,
+                }
+            time.sleep(poll_seconds)
+        observed = payload.get("all_titles", []) if "payload" in locals() else []
+        return {
+            "status": "error",
+            "details": (
+                f"Did not observe a Cubism window containing '{target_fragment}' after import."
+            ),
+            "artifact_path": str(artifact_path),
+            "observed_titles": observed,
+        }
+
     def _run_powershell(self, script_path: Path) -> subprocess.CompletedProcess[str]:
         return subprocess.run(
             [
@@ -530,42 +799,80 @@ class NativeWindowsGUIController:
             ],
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=_CONTROLLER_TIMEOUT_SECONDS,
             check=False,
         )
 
     def _launch_script(self, editor_path: Path, profile: JsonDict) -> str:
-        title = str(profile.get("window_title_contains", "Cubism Editor"))
+        fragments = self._activation_fragments(profile)
+        fragment_json = json.dumps(fragments, ensure_ascii=False).replace('"', '`"')
         delay_ms = int(float(profile.get("launch_wait_seconds", 2.0)) * 1000)
         return (
             '$ErrorActionPreference = "Stop"\n'
+            + self._window_activation_helper_script(profile)
+            + f'$activationFragments = ConvertFrom-Json "{fragment_json}"\n'
             f'Start-Process -FilePath "{editor_path}" | Out-Null\n'
             f"Start-Sleep -Milliseconds {delay_ms}\n"
-            "$wshell = New-Object -ComObject WScript.Shell\n"
-            f'$null = $wshell.AppActivate("{title}")\n'
+            "$null = Activate-ControllerWindow -Fragments $activationFragments\n"
         )
 
+    def _import_via_launch_argument_script(
+        self,
+        editor_path: Path,
+        psd_path: Path,
+        profile: JsonDict,
+    ) -> str:
+        delay_ms = int(float(profile.get("dialog_wait_seconds", 0.8)) * 1000)
+        return (
+            '$ErrorActionPreference = "Stop"\n'
+            f'Start-Process -FilePath "{editor_path}" -ArgumentList \'"{psd_path}"\' | Out-Null\n'
+            f"Start-Sleep -Milliseconds {delay_ms}\n"
+        )
+
+    def _has_apply_template_invocation(self, profile: JsonDict) -> bool:
+        shortcut = str(profile.get("template_shortcut", "")).strip()
+        menu_sequence = profile.get("template_menu_sequence", [])
+        return bool(shortcut or (isinstance(menu_sequence, list) and menu_sequence))
+
     def _apply_template_script(self, template_id: str, profile: JsonDict) -> str:
-        title = str(profile.get("window_title_contains", "Cubism Editor"))
-        shortcut = str(profile.get("template_shortcut", "^+t"))
+        fragments = self._activation_fragments(profile)
+        fragment_json = json.dumps(fragments, ensure_ascii=False).replace('"', '`"')
+        shortcut = str(profile.get("template_shortcut", "")).strip()
+        menu_sequence = [
+            entry for entry in profile.get("template_menu_sequence", []) if isinstance(entry, dict)
+        ]
         activation_ms = int(float(profile.get("activation_wait_seconds", 1.0)) * 1000)
         dialog_ms = int(float(profile.get("template_dialog_wait_seconds", 0.8)) * 1000)
         escaped_template = template_id.replace("{", "{{").replace("}", "}}")
-        script = (
-            '$ErrorActionPreference = "Stop"\n'
-            "$wshell = New-Object -ComObject WScript.Shell\n"
-            f'if (-not $wshell.AppActivate("{title}")) {{ throw "Cubism window not found." }}\n'
-            f"Start-Sleep -Milliseconds {activation_ms}\n"
-            f'$wshell.SendKeys("{shortcut}")\n'
-            f"Start-Sleep -Milliseconds {dialog_ms}\n"
-            f'$wshell.SendKeys("{escaped_template}")\n'
-            "Start-Sleep -Milliseconds 200\n"
-            '$wshell.SendKeys("~")\n'
-        )
-        return script + self._dialog_sequence_script("apply_template", profile)
+        lines = ['$ErrorActionPreference = "Stop"\n']
+        lines.append(self._window_activation_helper_script(profile))
+        lines.append(f'$activationFragments = ConvertFrom-Json "{fragment_json}"\n')
+        lines.append("$windowState = Activate-ControllerWindow -Fragments $activationFragments\n")
+        lines.append("$wshell = New-Object -ComObject WScript.Shell\n")
+        lines.append('if (-not $windowState.Activated) { throw "Cubism window not found." }\n')
+        lines.append(f"Start-Sleep -Milliseconds {activation_ms}\n")
+        if menu_sequence:
+            for entry in menu_sequence:
+                keys = str(entry.get("keys", "")).strip()
+                if not keys:
+                    continue
+                wait_ms = int(float(entry.get("wait_seconds", 0.25)) * 1000)
+                escaped_keys = self._escape_send_keys(keys)
+                lines.append(f'$wshell.SendKeys("{escaped_keys}")\n')
+                lines.append(f"Start-Sleep -Milliseconds {wait_ms}\n")
+        elif shortcut:
+            lines.append(f'$wshell.SendKeys("{shortcut}")\n')
+            lines.append(f"Start-Sleep -Milliseconds {dialog_ms}\n")
+        lines.append(f'$wshell.SendKeys("{escaped_template}")\n')
+        lines.append("Start-Sleep -Milliseconds 200\n")
+        lines.append('$wshell.SendKeys("~")\n')
+        return "".join(lines) + self._dialog_sequence_script("apply_template", profile)
 
     def _export_script(self, output_dir: Path, model_name: str, profile: JsonDict) -> str:
-        title = str(profile.get("window_title_contains", "Cubism Editor"))
+        fragments = self._activation_fragments(profile)
+        fragment_json = json.dumps(fragments, ensure_ascii=False).replace('"', '`"')
         shortcut = str(profile.get("export_shortcut", "^+e"))
         activation_ms = int(float(profile.get("activation_wait_seconds", 1.0)) * 1000)
         dialog_ms = int(float(profile.get("export_dialog_wait_seconds", 1.0)) * 1000)
@@ -573,8 +880,11 @@ class NativeWindowsGUIController:
         escaped_name = model_name.replace("{", "{{").replace("}", "}}")
         script = (
             '$ErrorActionPreference = "Stop"\n'
+            + self._window_activation_helper_script(profile)
+            + f'$activationFragments = ConvertFrom-Json "{fragment_json}"\n'
+            "$windowState = Activate-ControllerWindow -Fragments $activationFragments\n"
             "$wshell = New-Object -ComObject WScript.Shell\n"
-            f'if (-not $wshell.AppActivate("{title}")) {{ throw "Cubism window not found." }}\n'
+            'if (-not $windowState.Activated) { throw "Cubism window not found." }\n'
             f"Start-Sleep -Milliseconds {activation_ms}\n"
             f'$wshell.SendKeys("{shortcut}")\n'
             f"Start-Sleep -Milliseconds {dialog_ms}\n"
@@ -589,15 +899,19 @@ class NativeWindowsGUIController:
         return script + self._dialog_sequence_script("export_embedded_data", profile)
 
     def _import_script(self, psd_path: Path, profile: JsonDict) -> str:
-        title = str(profile.get("window_title_contains", "Cubism Editor"))
+        fragments = self._activation_fragments(profile)
+        fragment_json = json.dumps(fragments, ensure_ascii=False).replace('"', '`"')
         shortcut = str(profile.get("import_shortcut", "^o"))
         activation_ms = int(float(profile.get("activation_wait_seconds", 1.0)) * 1000)
         dialog_ms = int(float(profile.get("dialog_wait_seconds", 0.8)) * 1000)
         escaped_psd = str(psd_path).replace("{", "{{").replace("}", "}}")
         script = (
             '$ErrorActionPreference = "Stop"\n'
+            + self._window_activation_helper_script(profile)
+            + f'$activationFragments = ConvertFrom-Json "{fragment_json}"\n'
+            "$windowState = Activate-ControllerWindow -Fragments $activationFragments\n"
             "$wshell = New-Object -ComObject WScript.Shell\n"
-            f'if (-not $wshell.AppActivate("{title}")) {{ throw "Cubism window not found." }}\n'
+            'if (-not $windowState.Activated) { throw "Cubism window not found." }\n'
             f"Start-Sleep -Milliseconds {activation_ms}\n"
             f'$wshell.SendKeys("{shortcut}")\n'
             f"Start-Sleep -Milliseconds {dialog_ms}\n"
@@ -628,46 +942,139 @@ class NativeWindowsGUIController:
     def _escape_powershell_string(self, value: str) -> str:
         return value.replace('"', '`"')
 
-    def _window_probe_script(self, profile: JsonDict) -> str:
+    def _window_probe_script(
+        self,
+        profile: JsonDict,
+        extra_fragments: list[str] | None = None,
+    ) -> str:
         title = str(profile.get("window_title_contains", "Cubism Editor"))
-        diagnostic_fragments = [title]
-        diagnostic_fragments.extend(
+        fragments = self._activation_fragments(profile)
+        for fragment in extra_fragments or []:
+            normalized = str(fragment).strip()
+            if normalized and normalized not in fragments:
+                fragments.append(normalized)
+        fragment_json = json.dumps(fragments, ensure_ascii=False).replace('"', '`"')
+        return (
+            '$ErrorActionPreference = "Stop"\n'
+            + self._window_activation_helper_script(profile)
+            + f'$fragments = ConvertFrom-Json "{fragment_json}"\n'
+            "$windowState = Activate-ControllerWindow -Fragments $fragments\n"
+            "$result = [PSCustomObject]@{\n"
+            f'    target = "{self._escape_powershell_string(title)}"\n'
+            "    matched_titles = @($windowState.Matches | ForEach-Object { $_.Title })\n"
+            "    diagnostics = @($windowState.Matches)\n"
+            "    all_titles = @($windowState.Windows | ForEach-Object { $_.Title })\n"
+            "    all_diagnostics = @($windowState.Windows)\n"
+            "}\n"
+            "$result | ConvertTo-Json -Depth 4 -Compress | Write-Output\n"
+            "if ($windowState.Activated) { exit 0 } else { exit 3 }\n"
+        )
+
+    def _activation_fragments(self, profile: JsonDict) -> list[str]:
+        title = str(profile.get("window_title_contains", "Cubism Editor")).strip()
+        fragments = [title]
+        fragments.extend(
             str(fragment).strip()
             for fragment in profile.get("window_probe_candidates", [])
             if str(fragment).strip()
         )
         unique_fragments: list[str] = []
-        for fragment in diagnostic_fragments:
-            if fragment not in unique_fragments:
+        for fragment in fragments:
+            if fragment and fragment not in unique_fragments:
                 unique_fragments.append(fragment)
-        fragment_json = json.dumps(unique_fragments, ensure_ascii=False).replace('"', '`"')
+        return unique_fragments
+
+    def _window_activation_helper_script(self, profile: JsonDict) -> str:
+        preferred = self._escape_powershell_string(
+            str(profile.get("window_title_contains", "Cubism Editor")).strip()
+        )
+        activation_timeout_ms = int(
+            float(profile.get("window_activation_timeout_seconds", 8.0)) * 1000
+        )
+        poll_interval_ms = int(float(profile.get("window_activation_poll_seconds", 0.25)) * 1000)
         return (
-            '$ErrorActionPreference = "Stop"\n'
-            f'$fragments = ConvertFrom-Json "{fragment_json}"\n'
-            "$windows = Get-Process | Where-Object {\n"
-            "    $_.MainWindowTitle\n"
-            "} | ForEach-Object {\n"
-            "    [PSCustomObject]@{\n"
-            "        ProcessId = $_.Id\n"
-            "        ProcessName = $_.ProcessName\n"
-            "        Title = $_.MainWindowTitle\n"
+            "function Get-ControllerWindows {\n"
+            "    Get-Process | Where-Object {\n"
+            "        $_.MainWindowTitle\n"
+            "    } | ForEach-Object {\n"
+            "        [PSCustomObject]@{\n"
+            "            ProcessId = $_.Id\n"
+            "            ProcessName = $_.ProcessName\n"
+            "            Title = $_.MainWindowTitle\n"
+            "        }\n"
             "    }\n"
             "}\n"
-            "$diagnosticWindows = @($windows | Where-Object {\n"
-            "    $title = $_.Title\n"
-            '    $fragments | Where-Object { $title -like "*$_*" }\n'
-            "})\n"
-            "$wshell = New-Object -ComObject WScript.Shell\n"
-            f'$activated = $wshell.AppActivate("{title}")\n'
-            "$result = [PSCustomObject]@{\n"
-            f'    target = "{self._escape_powershell_string(title)}"\n'
-            "    matched_titles = @($diagnosticWindows | ForEach-Object { $_.Title })\n"
-            "    diagnostics = @($diagnosticWindows)\n"
-            "    all_titles = @($windows | ForEach-Object { $_.Title })\n"
-            "    all_diagnostics = @($windows)\n"
+            "function Select-PreferredControllerWindow {\n"
+            "    param(\n"
+            "        [object[]]$Matches,\n"
+            "        [string]$PreferredTitle\n"
+            "    )\n"
+            "    if (-not $Matches -or $Matches.Count -eq 0) {\n"
+            "        return $null\n"
+            "    }\n"
+            "    $documentMatches = @($Matches | Where-Object {\n"
+            "        $_.Title -match '-\\s*\\S+$'\n"
+            "    })\n"
+            "    if ($documentMatches.Count -gt 0) {\n"
+            "        return ($documentMatches |\n"
+            "            Sort-Object TitleLength -Descending |\n"
+            "            Select-Object -First 1)\n"
+            "    }\n"
+            "    $exact = @($Matches | Where-Object { $_.Title -eq $PreferredTitle })\n"
+            "    if ($exact.Count -gt 0) {\n"
+            "        return ($exact |\n"
+            "            Sort-Object TitleLength -Descending |\n"
+            "            Select-Object -First 1)\n"
+            "    }\n"
+            "    $editorMatches = @($Matches | Where-Object {\n"
+            '        $_.Title -like "*Cubism*" -or $_.Title -like "*Editor*"\n'
+            "    })\n"
+            "    if ($editorMatches.Count -gt 0) {\n"
+            "        return ($editorMatches |\n"
+            "            Sort-Object TitleLength -Descending |\n"
+            "            Select-Object -First 1)\n"
+            "    }\n"
+            "    return ($Matches |\n"
+            "        Sort-Object TitleLength -Descending |\n"
+            "        Select-Object -First 1)\n"
             "}\n"
-            "$result | ConvertTo-Json -Depth 4 -Compress | Write-Output\n"
-            "if ($activated) { exit 0 } else { exit 3 }\n"
+            "function Activate-ControllerWindow {\n"
+            "    param([string[]]$Fragments)\n"
+            f"    $deadline = (Get-Date).AddMilliseconds({activation_timeout_ms})\n"
+            f"    $pollInterval = {poll_interval_ms}\n"
+            "    $windows = @()\n"
+            "    $matches = @()\n"
+            "    $target = $null\n"
+            "    $activated = $false\n"
+            f'    $preferredTitle = "{preferred}"\n'
+            "    $wshell = New-Object -ComObject WScript.Shell\n"
+            "    do {\n"
+            "        $windows = @(Get-ControllerWindows)\n"
+            "        $matches = @($windows | Where-Object {\n"
+            "            $windowTitle = $_.Title\n"
+            '            $Fragments | Where-Object { $_ -and $windowTitle -like "*$_*" }\n'
+            "        })\n"
+            "        $matches = @($matches | ForEach-Object {\n"
+            "            $_ |\n"
+            "                Add-Member -NotePropertyName TitleLength `\n"
+            "                    -NotePropertyValue $_.Title.Length -PassThru\n"
+            "        })\n"
+            "        $target = Select-PreferredControllerWindow `\n"
+            "            -Matches $matches `\n"
+            "            -PreferredTitle $preferredTitle\n"
+            "        if ($null -ne $target) {\n"
+            "            $activated = $wshell.AppActivate([int]$target.ProcessId)\n"
+            "            if ($activated) { break }\n"
+            "        }\n"
+            "        Start-Sleep -Milliseconds $pollInterval\n"
+            "    } while ((Get-Date) -lt $deadline)\n"
+            "    return [PSCustomObject]@{\n"
+            "        Windows = $windows\n"
+            "        Matches = $matches\n"
+            "        Target = $target\n"
+            "        Activated = $activated\n"
+            "    }\n"
+            "}\n"
         )
 
     def _parse_probe_stdout(self, stdout: str) -> JsonDict:
@@ -696,8 +1103,13 @@ class NativeWindowsGUIController:
             extracted["target"] = parsed["target"]
         return extracted
 
-    def _capture_script(self, screenshot_path: Path, profile: JsonDict) -> str:
-        delay_ms = int(float(profile.get("failure_capture_wait_seconds", 0.2)) * 1000)
+    def _capture_script(
+        self,
+        screenshot_path: Path,
+        profile: JsonDict,
+        wait_key: str = "failure_capture_wait_seconds",
+    ) -> str:
+        delay_ms = int(float(profile.get(wait_key, 0.2)) * 1000)
         escaped_path = str(screenshot_path).replace("'", "''")
         return (
             '$ErrorActionPreference = "Stop"\n'
