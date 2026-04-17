@@ -626,14 +626,28 @@ class CubismAutomationManager:
         action_diagnostics: dict[str, Any] = {}
         for step in execution.get("executed_steps", []):
             action = str(step.get("source_action", ""))
+            if not action:
+                continue
+            diagnostics: JsonDict = {
+                "status": str(step.get("status", "pending")),
+                "details": str(step.get("details", "")).strip(),
+            }
+            if action == "apply_template":
+                diagnostics.update(self._apply_template_profile_diagnostics(profile))
             artifact_path = step.get("artifact_path")
-            if not action or not artifact_path:
+            if not artifact_path:
+                if diagnostics:
+                    action_diagnostics[action] = diagnostics
                 continue
             artifact = self._read_json_artifact(artifact_path)
             if not artifact:
+                if diagnostics:
+                    action_diagnostics[action] = diagnostics
                 continue
             attempts = artifact.get("attempts")
             if not isinstance(attempts, list) or not attempts:
+                if diagnostics:
+                    action_diagnostics[action] = diagnostics
                 continue
             action_titles: list[str] = []
             recovery_plans: list[JsonDict] = []
@@ -666,18 +680,21 @@ class CubismAutomationManager:
                 for title in inferred_dialog_titles
                 if title not in configured_dialogs and title not in probe_candidates
             ]
-            action_diagnostics[action] = {
-                "configured_dialog_titles": configured_dialogs,
-                "observed_titles": self._unique_items(action_titles),
-                "recovery_plan_sources": [
-                    {
-                        "dialog_source": plan.get("dialog_source"),
-                        "sequence_source": plan.get("sequence_source"),
-                    }
-                    for plan in recovery_plans
-                ],
-                "suggested_dialog_titles": missing_dialog_titles,
-            }
+            diagnostics.update(
+                {
+                    "configured_dialog_titles": configured_dialogs,
+                    "observed_titles": self._unique_items(action_titles),
+                    "recovery_plan_sources": [
+                        {
+                            "dialog_source": plan.get("dialog_source"),
+                            "sequence_source": plan.get("sequence_source"),
+                        }
+                        for plan in recovery_plans
+                    ],
+                    "suggested_dialog_titles": missing_dialog_titles,
+                }
+            )
+            action_diagnostics[action] = diagnostics
 
         target_title = str(profile.get("window_title_contains", "")).strip()
         unique_observed = self._unique_items(
@@ -780,6 +797,30 @@ class CubismAutomationManager:
                 result.append(value)
         return result
 
+    def _apply_template_profile_diagnostics(self, profile: JsonDict) -> JsonDict:
+        shortcut = str(profile.get("template_shortcut", "")).strip()
+        raw_menu_sequence = profile.get("template_menu_sequence", [])
+        menu_sequence = (
+            [entry for entry in raw_menu_sequence if isinstance(entry, dict)]
+            if isinstance(raw_menu_sequence, list)
+            else []
+        )
+        executable_sequence = [
+            entry for entry in menu_sequence if str(entry.get("keys", "")).strip()
+        ]
+        return {
+            "template_shortcut_configured": bool(shortcut),
+            "template_menu_sequence_configured": bool(executable_sequence),
+            "template_menu_sequence_length": len(executable_sequence),
+            "template_menu_sequence_entries": len(menu_sequence),
+            "apply_template_ready": bool(shortcut or executable_sequence),
+            "recommended_menu_path": ["Modeling", "Model template", "Apply template"],
+            "documentation_hint": (
+                "Calibrate this action against the Cubism menu path "
+                "[Modeling] -> [Model template] -> [Apply template]."
+            ),
+        }
+
     def _calibration_suggestions(
         self,
         missing_probe_candidates: list[str],
@@ -803,6 +844,14 @@ class CubismAutomationManager:
                 suggestions.append(
                     "Consider adding these titles to "
                     f"`known_dialog_recovery.{action}`: {', '.join(suggested)}."
+                )
+            if action == "apply_template" and diagnostics.get("apply_template_ready") is False:
+                suggestions.append(
+                    "Configure `template_menu_sequence` in the native GUI profile for "
+                    "`apply_template` using the Cubism menu path "
+                    "[Modeling] -> [Model template] -> [Apply template], or provide an "
+                    "adapter-backed implementation, before expecting template application "
+                    "to run in execute mode."
                 )
         if not suggestions:
             suggestions.append(

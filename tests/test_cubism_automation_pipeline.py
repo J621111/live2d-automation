@@ -2687,3 +2687,82 @@ def test_profile_calibration_report_surfaces_likely_titles_when_probe_target_mis
     assert "PSD Import" in report["likely_window_titles"]
     assert "Live2D Cubism 5.3" in report["missing_probe_candidates"]
     assert any("window_probe_candidates" in suggestion for suggestion in report["suggestions"])
+
+
+def test_profile_calibration_report_surfaces_missing_apply_template_invocation() -> None:
+    manager = CubismAutomationManager()
+    bundle = {
+        "backend": "native_gui",
+        "model_name": "TemplateDiag",
+        "native_controller": {
+            "profile": {
+                "window_title_contains": "Cubism Editor",
+                "window_probe_candidates": ["Cubism Editor"],
+                "known_dialog_recovery": {},
+                "template_menu_sequence": [],
+            }
+        },
+    }
+    execution = {
+        "resume": {"window_probe": None},
+        "executed_steps": [
+            {
+                "source_action": "apply_template",
+                "status": "error",
+                "details": (
+                    "Apply-template automation requires a configured template menu sequence "
+                    "or explicit template shortcut in the native GUI profile."
+                ),
+            }
+        ],
+    }
+
+    report = manager.build_profile_calibration_report(bundle, execution)
+
+    assert report["action_diagnostics"]["apply_template"]["status"] == "error"
+    assert report["action_diagnostics"]["apply_template"]["apply_template_ready"] is False
+    assert (
+        report["action_diagnostics"]["apply_template"]["template_menu_sequence_configured"] is False
+    )
+    assert any("template_menu_sequence" in suggestion for suggestion in report["suggestions"])
+
+
+def test_profile_calibration_report_ignores_unusable_apply_template_sequence() -> None:
+    manager = CubismAutomationManager()
+    bundle = {
+        "backend": "native_gui",
+        "model_name": "TemplateDiagInvalid",
+        "native_controller": {
+            "profile": {
+                "window_title_contains": "Cubism Editor",
+                "window_probe_candidates": ["Cubism Editor"],
+                "known_dialog_recovery": {},
+                "template_menu_sequence": [{"wait_seconds": 0.2}],
+            }
+        },
+    }
+    execution = {
+        "resume": {"window_probe": None},
+        "executed_steps": [
+            {
+                "source_action": "apply_template",
+                "status": "error",
+                "details": "Apply-template calibration is still missing.",
+            }
+        ],
+    }
+
+    report = manager.build_profile_calibration_report(bundle, execution)
+
+    diagnostics = report["action_diagnostics"]["apply_template"]
+    assert diagnostics["template_menu_sequence_entries"] == 1
+    assert diagnostics["template_menu_sequence_length"] == 0
+    assert diagnostics["template_menu_sequence_configured"] is False
+    assert diagnostics["apply_template_ready"] is False
+    assert diagnostics["recommended_menu_path"] == [
+        "Modeling",
+        "Model template",
+        "Apply template",
+    ]
+    assert "Modeling" in diagnostics["documentation_hint"]
+    assert any("template_menu_sequence" in suggestion for suggestion in report["suggestions"])
