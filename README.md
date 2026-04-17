@@ -58,6 +58,22 @@ python -m mcp_server.cli run --image-path ATRI.png --output-dir output/ATRI --de
 
 The CLI writes a `<model_name>_cli_report.json` file into the output directory.
 
+If you already have a Cubism-ready PSD and only want to tune the Cubism automation half, use the
+calibration command instead of re-running image analysis:
+
+```bash
+python -m mcp_server.cli calibrate-template --output-dir output/ATRI_real --model-name ATRI --psd-path output/ATRI_real/ATRI.psd --editor-path "C:\Program Files\Live2D\Cubism5\Cubism Editor 5\CubismEditor5.exe" --native-gui-controller-mode execute
+```
+
+If `--psd-path` is omitted, the CLI will look for `<output_dir>/<model_name>.psd`. This is the
+fastest loop for calibrating `template_menu_sequence`, because it only rebuilds the Cubism plan,
+dispatch bundle, execution report, and profile calibration report.
+
+Add `--resume` when you want to continue from the latest compatible dispatch execution in the same
+output directory. The CLI only resumes when the PSD file, template id, editor path, and controller
+mode still match; otherwise it falls back to a fresh execution and records that decision in the
+CLI report.
+
 
 ### Run the full pipeline
 
@@ -137,6 +153,23 @@ Each dispatch execution now also writes a `{model_name}_cubism_profile_calibrati
 - suggested `known_dialog_recovery` additions
 
 Use this report as the primary guide when tuning the built-in Windows profile against a real Cubism installation.
+
+For `apply_template`, the built-in controller now expects an explicit profile-driven invocation. The bundled default profile leaves this empty on purpose, because Cubism's template workflow is UI-version dependent and a wrong shortcut is worse than no shortcut at all.
+
+Use `template_menu_sequence` in [mcp_server/profiles/windows_cubism_default.json](mcp_server/profiles/windows_cubism_default.json) to define a menu-driven action sequence such as:
+
+```json
+"template_menu_sequence": [
+  { "keys": "%m", "wait_seconds": 0.2 },
+  { "keys": "t", "wait_seconds": 0.2 },
+  { "keys": "a", "wait_seconds": 0.2 }
+]
+```
+
+Calibrate that sequence against the Cubism menu path documented in the official editor manual:
+[Modeling] -> [Model template] -> [Apply template](https://docs.live2d.com/en/cubism-editor-manual/applying-the-model-template/).
+
+If `apply_template` fails without an artifact, the calibration report will now explicitly tell you whether `template_menu_sequence` or `template_shortcut` is still missing, and it will repeat that recommended menu path in the diagnostics.
 
 ## Export notes
 
