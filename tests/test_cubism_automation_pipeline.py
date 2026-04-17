@@ -1670,6 +1670,243 @@ def test_native_gui_controller_captures_failure_after_timeout(
     assert payload["attempts"][0]["timeout"] is True
 
 
+def test_native_gui_controller_marks_export_missing_outputs_as_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    controller = NativeWindowsGUIController()
+    output_dir = tmp_path / "controller_export_missing_outputs"
+    controller_state = {
+        "status": "ready",
+        "mode": "execute",
+        "profile": {
+            "window_title_contains": "Cubism Editor",
+            "import_shortcut": "^o",
+            "activation_wait_seconds": 0.0,
+            "export_dialog_wait_seconds": 0.0,
+            "export_output_timeout_seconds": 0.0,
+            "export_output_poll_seconds": 0.05,
+        },
+    }
+
+    def fake_run(script_path: Path) -> subprocess.CompletedProcess[str]:
+        if script_path.name == "native_gui_builtin_export.ps1":
+            return subprocess.CompletedProcess([str(script_path)], 0, "", "")
+        if script_path.name == "native_gui_builtin_export_embedded_data_failure_capture.ps1":
+            screenshot_path = (
+                output_dir / "native_gui_builtin_export_embedded_data_failure_capture.png"
+            )
+            screenshot_path.parent.mkdir(parents=True, exist_ok=True)
+            screenshot_path.write_bytes(b"png")
+            return subprocess.CompletedProcess([str(script_path)], 0, "captured", "")
+        return subprocess.CompletedProcess([str(script_path)], 0, "", "")
+
+    monkeypatch.setattr(controller, "_run_powershell", fake_run)
+
+    result = controller.execute_export(controller_state, output_dir, "MissingExport")
+
+    assert result["status"] == "error"
+    payload = json.loads(Path(result["artifact_path"]).read_text(encoding="utf-8"))
+    assert payload["returncode"] == 2
+    assert payload["post_success_check"]["status"] == "error"
+    assert payload["post_success_check"]["missing"] == ["moc3", "model3", "textures_dir"]
+    assert payload["failure_capture"]["status"] == "success"
+
+
+def test_native_gui_controller_records_success_probe_and_capture(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    controller = NativeWindowsGUIController()
+    output_dir = tmp_path / "artifacts"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    psd_path = tmp_path / "input.psd"
+    psd_path.write_bytes(b"psd")
+    controller_state = {
+        "status": "ready",
+        "mode": "execute",
+        "profile": {
+            "window_title_contains": "Cubism Editor",
+            "import_shortcut": "^o",
+            "activation_wait_seconds": 0.0,
+            "dialog_wait_seconds": 0.0,
+            "failure_capture_wait_seconds": 0.0,
+            "success_capture_wait_seconds": 0.0,
+        },
+    }
+
+    def fake_run(script_path: Path) -> subprocess.CompletedProcess[str]:
+        if script_path.name == "native_gui_builtin_import.ps1":
+            return subprocess.CompletedProcess([str(script_path)], 0, "", "")
+        if script_path.name == "native_gui_builtin_import_psd_post_probe.ps1":
+            stdout = json.dumps(
+                {
+                    "target": "Cubism Editor",
+                    "matched_titles": ["Live2D Cubism Editor 5.3.01    [ FREE version ]  -"],
+                    "all_titles": ["Live2D Cubism Editor 5.3.01    [ FREE version ]  -"],
+                }
+            )
+            return subprocess.CompletedProcess([str(script_path)], 0, stdout, "")
+        if script_path.name == "native_gui_builtin_import_psd_success_capture.ps1":
+            screenshot_path = output_dir / "native_gui_builtin_import_psd_success_capture.png"
+            screenshot_path.parent.mkdir(parents=True, exist_ok=True)
+            screenshot_path.write_bytes(b"png")
+            return subprocess.CompletedProcess([str(script_path)], 0, "captured", "")
+        return subprocess.CompletedProcess([str(script_path)], 0, "", "")
+
+    monkeypatch.setattr(controller, "_run_powershell", fake_run)
+
+    result = controller.execute_import(controller_state, psd_path, output_dir)
+
+    assert result["status"] == "success"
+    payload = json.loads(Path(result["artifact_path"]).read_text(encoding="utf-8"))
+    assert payload["post_action_probe"]["status"] == "success"
+    assert payload["post_action_probe"]["matched_titles"] == [
+        "Live2D Cubism Editor 5.3.01    [ FREE version ]  -"
+    ]
+    assert payload["success_capture"]["status"] == "success"
+    assert Path(payload["success_capture"]["artifact_path"]).exists()
+    assert Path(payload["success_capture"]["screenshot_path"]).exists()
+
+
+def test_native_gui_controller_import_can_use_launch_argument_and_title_check(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    controller = NativeWindowsGUIController()
+    output_dir = tmp_path / "artifacts"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    psd_path = tmp_path / "ATRI.psd"
+    psd_path.write_bytes(b"psd")
+    editor_path = tmp_path / "CubismEditor5.exe"
+    editor_path.write_text("stub", encoding="utf-8")
+    controller_state = {
+        "status": "ready",
+        "mode": "execute",
+        "profile": {
+            "window_title_contains": "Cubism Editor",
+            "import_shortcut": "^o",
+            "import_via_launch_argument": True,
+            "activation_wait_seconds": 0.0,
+            "dialog_wait_seconds": 0.0,
+            "document_window_timeout_seconds": 0.1,
+            "document_window_poll_seconds": 0.05,
+            "failure_capture_wait_seconds": 0.0,
+            "success_capture_wait_seconds": 0.0,
+        },
+    }
+
+    def fake_run(script_path: Path) -> subprocess.CompletedProcess[str]:
+        if script_path.name == "native_gui_builtin_import.ps1":
+            return subprocess.CompletedProcess([str(script_path)], 0, "", "")
+        if script_path.name == "native_gui_builtin_import_psd_title_check.ps1":
+            stdout = json.dumps(
+                {
+                    "target": "Cubism Editor",
+                    "matched_titles": ["Live2D Cubism Editor 5.3.01    [ FREE version ]  - ATRI"],
+                    "all_titles": ["Live2D Cubism Editor 5.3.01    [ FREE version ]  - ATRI"],
+                    "all_diagnostics": [
+                        {
+                            "ProcessName": "java",
+                            "Title": "Live2D Cubism Editor 5.3.01    [ FREE version ]  - ATRI",
+                        }
+                    ],
+                }
+            )
+            return subprocess.CompletedProcess([str(script_path)], 0, stdout, "")
+        if script_path.name == "native_gui_builtin_import_psd_post_probe.ps1":
+            stdout = json.dumps(
+                {
+                    "target": "Cubism Editor",
+                    "matched_titles": ["Live2D Cubism Editor 5.3.01    [ FREE version ]  - ATRI"],
+                    "all_titles": ["Live2D Cubism Editor 5.3.01    [ FREE version ]  - ATRI"],
+                }
+            )
+            return subprocess.CompletedProcess([str(script_path)], 0, stdout, "")
+        if script_path.name == "native_gui_builtin_import_psd_success_capture.ps1":
+            screenshot_path = output_dir / "native_gui_builtin_import_psd_success_capture.png"
+            screenshot_path.parent.mkdir(parents=True, exist_ok=True)
+            screenshot_path.write_bytes(b"png")
+            return subprocess.CompletedProcess([str(script_path)], 0, "captured", "")
+        return subprocess.CompletedProcess([str(script_path)], 0, "", "")
+
+    monkeypatch.setattr(controller, "_run_powershell", fake_run)
+
+    result = controller.execute_import(
+        controller_state,
+        psd_path,
+        output_dir,
+        editor_path=editor_path,
+    )
+
+    assert result["status"] == "success"
+    script = (output_dir / "native_gui_builtin_import.ps1").read_text(encoding="utf-8")
+    assert f'Start-Process -FilePath "{editor_path}"' in script
+    assert str(psd_path) in script
+    payload = json.loads(Path(result["artifact_path"]).read_text(encoding="utf-8"))
+    assert payload["post_success_check"]["status"] == "success"
+    assert payload["post_success_check"]["matched_titles"] == [
+        "Live2D Cubism Editor 5.3.01    [ FREE version ]  - ATRI"
+    ]
+
+
+def test_native_gui_controller_import_title_check_ignores_non_cubism_windows(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    controller = NativeWindowsGUIController()
+    output_dir = tmp_path / "artifacts"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    psd_path = tmp_path / "ATRI.psd"
+    psd_path.write_bytes(b"psd")
+    editor_path = tmp_path / "CubismEditor5.exe"
+    editor_path.write_text("stub", encoding="utf-8")
+    controller_state = {
+        "status": "ready",
+        "mode": "execute",
+        "profile": {
+            "window_title_contains": "Cubism Editor",
+            "import_shortcut": "^o",
+            "import_via_launch_argument": True,
+            "activation_wait_seconds": 0.0,
+            "dialog_wait_seconds": 0.0,
+            "document_window_timeout_seconds": 0.1,
+            "document_window_poll_seconds": 0.05,
+            "failure_capture_wait_seconds": 0.0,
+            "success_capture_wait_seconds": 0.0,
+        },
+    }
+
+    def fake_run(script_path: Path) -> subprocess.CompletedProcess[str]:
+        if script_path.name == "native_gui_builtin_import.ps1":
+            return subprocess.CompletedProcess([str(script_path)], 0, "", "")
+        if script_path.name == "native_gui_builtin_import_psd_title_check.ps1":
+            stdout = json.dumps(
+                {
+                    "target": "Cubism Editor",
+                    "all_titles": ["atri dev"],
+                    "all_diagnostics": [{"ProcessName": "QQ", "Title": "atri dev"}],
+                }
+            )
+            return subprocess.CompletedProcess([str(script_path)], 0, stdout, "")
+        if script_path.name == "native_gui_builtin_import_psd_failure_capture.ps1":
+            screenshot_path = output_dir / "native_gui_builtin_import_psd_failure_capture.png"
+            screenshot_path.parent.mkdir(parents=True, exist_ok=True)
+            screenshot_path.write_bytes(b"png")
+            return subprocess.CompletedProcess([str(script_path)], 0, "captured", "")
+        return subprocess.CompletedProcess([str(script_path)], 0, "", "")
+
+    monkeypatch.setattr(controller, "_run_powershell", fake_run)
+
+    result = controller.execute_import(
+        controller_state,
+        psd_path,
+        output_dir,
+        editor_path=editor_path,
+    )
+
+    assert result["status"] == "error"
+    payload = json.loads(Path(result["artifact_path"]).read_text(encoding="utf-8"))
+    assert payload["post_success_check"]["status"] == "error"
+    assert payload["failure_capture"]["status"] == "success"
+
+
 def test_resume_requires_live_window_probe_before_skipping_prerequisites(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -1755,6 +1992,96 @@ def test_resume_requires_live_window_probe_before_skipping_prerequisites(
     assert statuses["launch_editor"] == "success"
     assert statuses["import_psd"] == "success"
     assert execution["resume"]["window_probe"]["status"] == "error"
+
+
+def test_execute_dispatch_defers_launch_when_import_uses_direct_open(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    manager = CubismAutomationManager()
+    output_dir = tmp_path / "dispatch"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    bundle = {
+        "backend": "native_gui",
+        "ready_to_execute": True,
+        "output_dir": str(output_dir),
+        "model_name": "DirectOpen",
+        "template_id": "standard_bust_up",
+        "editor": {"editor_path": str(tmp_path / "CubismEditor5.exe")},
+        "psd_path": str(tmp_path / "DirectOpen.psd"),
+        "native_controller": {
+            "status": "ready",
+            "mode": "execute",
+            "profile": {"import_via_launch_argument": True},
+        },
+        "native_adapter": {"status": "disabled"},
+        "dispatch_steps": [
+            {"step": 1, "source_action": "launch_editor"},
+            {"step": 2, "source_action": "import_psd"},
+        ],
+    }
+
+    monkeypatch.setattr(
+        manager,
+        "_execute_native_import",
+        lambda *args, **kwargs: {
+            "source_action": "import_psd",
+            "status": "success",
+            "details": "imported",
+        },
+    )
+
+    execution = manager.execute_dispatch_bundle(bundle)
+
+    assert execution["executed_steps"][0]["source_action"] == "launch_editor"
+    assert execution["executed_steps"][0]["status"] == "success"
+    assert "deferred to import_psd" in execution["executed_steps"][0]["details"]
+    assert execution["executed_steps"][1]["status"] == "success"
+
+
+def test_execute_dispatch_halts_after_import_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    manager = CubismAutomationManager()
+    output_dir = tmp_path / "dispatch"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    bundle = {
+        "backend": "native_gui",
+        "ready_to_execute": True,
+        "output_dir": str(output_dir),
+        "model_name": "StopOnError",
+        "template_id": "standard_bust_up",
+        "editor": {"editor_path": str(tmp_path / "CubismEditor5.exe")},
+        "psd_path": str(tmp_path / "StopOnError.psd"),
+        "native_controller": {
+            "status": "ready",
+            "mode": "execute",
+            "profile": {"import_via_launch_argument": True},
+        },
+        "native_adapter": {"status": "disabled"},
+        "dispatch_steps": [
+            {"step": 1, "source_action": "launch_editor"},
+            {"step": 2, "source_action": "import_psd"},
+            {"step": 3, "source_action": "apply_template"},
+            {"step": 4, "source_action": "export_embedded_data"},
+        ],
+    }
+
+    monkeypatch.setattr(
+        manager,
+        "_execute_native_import",
+        lambda *args, **kwargs: {
+            "source_action": "import_psd",
+            "status": "error",
+            "details": "import failed",
+        },
+    )
+
+    execution = manager.execute_dispatch_bundle(bundle)
+
+    assert execution["executed_steps"][1]["status"] == "error"
+    assert execution["executed_steps"][2]["status"] == "pending"
+    assert execution["executed_steps"][3]["status"] == "pending"
+    assert "previous automation step failed" in execution["executed_steps"][2]["details"]
 
 
 def test_resume_does_not_skip_prerequisites_when_controller_cannot_probe(
@@ -1879,6 +2206,8 @@ def test_native_gui_controller_runs_recovery_before_retry(
         "native_gui_builtin_import_psd_retry_recovery_attempt_1.ps1",
         "native_gui_builtin_window_probe.ps1",
         "native_gui_builtin_import.ps1",
+        "native_gui_builtin_import_psd_post_probe.ps1",
+        "native_gui_builtin_import_psd_success_capture.ps1",
     ]
     payload = json.loads(Path(result["artifact_path"]).read_text(encoding="utf-8"))
     recovery = payload["attempts"][0]["recovery"]
@@ -1887,7 +2216,8 @@ def test_native_gui_controller_runs_recovery_before_retry(
     script_text = (
         output_dir / "native_gui_builtin_import_psd_retry_recovery_attempt_1.ps1"
     ).read_text(encoding="utf-8")
-    assert 'AppActivate("Cubism Editor")' in script_text
+    assert "function Activate-ControllerWindow" in script_text
+    assert "$windowState = Activate-ControllerWindow -Fragments $activationFragments" in script_text
     assert '$wshell.SendKeys("{ESC}")' in script_text
 
 
@@ -2082,7 +2412,9 @@ def test_native_gui_controller_recovery_script_targets_known_dialogs(
     assert 'TitleFragment "Import PSD"' in script_text
     assert "$wshell.AppActivate($process.Id)" in script_text
     assert 'Invoke-DialogRecovery -TitleFragment "Import PSD" -Keys "%y"' in script_text
-    assert 'if (-not $wshell.AppActivate("Cubism Editor")) { exit 3 }' in script_text
+    assert "function Activate-ControllerWindow" in script_text
+    assert "$windowState = Activate-ControllerWindow -Fragments $activationFragments" in script_text
+    assert "if (-not $windowState.Activated) { exit 3 }" in script_text
     payload = json.loads(Path(result["artifact_path"]).read_text(encoding="utf-8"))
     plan = payload["attempts"][0]["recovery"]["dialog_recovery_plan"]
     assert plan["dialog_source"] == "import_psd"
