@@ -38,17 +38,28 @@ from mcp_server.tools.part_segmenter import PartSegmenter
 from mcp_server.tools.physics_setup import PhysicsSetup
 from mcp_server.tools.psd_builder import CubismPSDBuilder
 from mcp_server.tools.template_mapper import TemplateMapper
+from mcp_server.validation import (
+    OUTPUT_ROOT,
+    InputValidationError,
+)
+from mcp_server.validation import (
+    is_relative_to as _shared_is_relative_to,
+)
+from mcp_server.validation import (
+    resolve_output_dir as _shared_resolve_output_dir,
+)
+from mcp_server.validation import (
+    validate_model_name as _shared_validate_model_name,
+)
 
 mcp = FastMCP("live2d-automation")
 
-OUTPUT_ROOT = (project_root / "output").resolve()
 MAX_IMAGE_BYTES = 20 * 1024 * 1024
 MAX_IMAGE_WIDTH = 4096
 MAX_IMAGE_HEIGHT = 4096
 MAX_IMAGE_PIXELS = 16_777_216
 ALLOWED_IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".webp"}
 SESSION_ID_RE = re.compile(r"^[A-Za-z0-9_-]{8,64}$")
-MODEL_NAME_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
 DEFAULT_MOTION_TYPES = ["idle", "tap", "move", "emotional"]
 ALLOWED_MOTION_TYPES = tuple(DEFAULT_MOTION_TYPES)
 MAX_MOTION_TYPES = len(DEFAULT_MOTION_TYPES)
@@ -75,10 +86,6 @@ def _env_int(name: str, default: int, minimum: int = 1) -> int:
 MAX_SESSIONS = _env_int("LIVE2D_MAX_SESSIONS", 32)
 SESSION_TTL_SECONDS = _env_int("LIVE2D_SESSION_TTL_SECONDS", 60 * 60)
 MAX_CONCURRENT_OPERATIONS = _env_int("LIVE2D_MAX_CONCURRENT_OPERATIONS", 4)
-
-
-class InputValidationError(ValueError):
-    """Raised when a user-controlled input is unsafe or invalid."""
 
 
 @dataclass
@@ -133,11 +140,7 @@ session_metrics = SessionMetrics()
 
 
 def _is_relative_to(path: Path, root: Path) -> bool:
-    try:
-        path.relative_to(root)
-        return True
-    except ValueError:
-        return False
+    return _shared_is_relative_to(path, root)
 
 
 def _new_session_id() -> str:
@@ -303,32 +306,11 @@ def _resolve_image_path(image_path: str) -> Path:
 
 
 def _resolve_output_dir(output_dir: str) -> Path:
-    if not output_dir or not output_dir.strip():
-        raise InputValidationError("output_dir is required.")
-
-    normalized_output_dir = output_dir.strip().replace("\\", "/")
-    raw_path = Path(normalized_output_dir)
-
-    if ".." in raw_path.parts:
-        raise InputValidationError("output_dir must stay inside the project output directory.")
-
-    if raw_path.is_absolute():
-        resolved = raw_path.resolve()
-    elif raw_path.parts and raw_path.parts[0] == "output":
-        resolved = (project_root / raw_path).resolve()
-    else:
-        resolved = (OUTPUT_ROOT / raw_path).resolve()
-    if not _is_relative_to(resolved, OUTPUT_ROOT):
-        raise InputValidationError("output_dir must stay inside the project output directory.")
-    return resolved
+    return _shared_resolve_output_dir(output_dir)
 
 
 def _validate_model_name(model_name: str) -> str:
-    if not MODEL_NAME_RE.match(model_name):
-        raise InputValidationError(
-            "model_name may only contain letters, numbers, underscores, and hyphens."
-        )
-    return model_name
+    return _shared_validate_model_name(model_name)
 
 
 def _validate_motion_types(motion_types: list[str] | None) -> list[str]:

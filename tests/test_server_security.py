@@ -4,6 +4,7 @@ from pathlib import Path
 import pytest
 from PIL import Image, ImageDraw
 
+from mcp_server.artifacts import redact_command
 from mcp_server.secure_server_impl import (
     InputValidationError,
     _resolve_output_dir,
@@ -51,6 +52,24 @@ def _create_sample_character_image(path: Path) -> Path:
     draw.rectangle((250, 118, 518, 164), fill=(34, 45, 92, 255))
     image.save(path, format="PNG")
     return path
+
+
+def test_redact_command_masks_inline_secret_assignments() -> None:
+    command = [
+        "adapter.exe",
+        "--api-key=super-secret",
+        "--token",
+        "plain-secret",
+        "--safe=value",
+    ]
+
+    assert redact_command(command) == [
+        "adapter.exe",
+        "--api-key=<redacted>",
+        "--token",
+        "<redacted>",
+        "--safe=value",
+    ]
 
 
 @pytest.fixture

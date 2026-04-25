@@ -9,6 +9,7 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 from urllib import request
+from urllib.parse import urlparse
 
 from mcp_server.schemas import BoundingBox, DetectedPart
 from mcp_server.tools.part_detection_backends.base import PartDetectionBackend
@@ -57,6 +58,7 @@ class APIPartDetectionBackend(PartDetectionBackend):
         model: str | None = None,
         transport: Transport | None = None,
         fallback_backend: HeuristicPartDetectionBackend | None = None,
+        allow_remote_upload: bool | None = None,
     ) -> None:
         configured_url = api_url or os.getenv("LIVE2D_PART_API_URL")
         self.api_url = configured_url or ("inmemory://part-detector" if transport else None)
@@ -64,6 +66,14 @@ class APIPartDetectionBackend(PartDetectionBackend):
         self.model = model or os.getenv("LIVE2D_PART_API_MODEL", "part-locator-v1")
         self.transport = transport or self._default_transport
         self.fallback_backend = fallback_backend or HeuristicPartDetectionBackend()
+        self.allow_remote_upload = (
+            allow_remote_upload
+            if allow_remote_upload is not None
+            else self._env_flag("LIVE2D_PART_API_ALLOW_UPLOAD", default=transport is not None)
+        )
+        self.allowed_hosts = self._allowed_hosts()
+        self.timeout_seconds = self._env_int("LIVE2D_PART_API_TIMEOUT_SECONDS", 30)
+        self.max_response_bytes = self._env_int("LIVE2D_PART_API_MAX_RESPONSE_BYTES", 512 * 1024)
 
     async def analyze(self, image_path: str) -> JsonDict:
         fallback_result = await self.fallback_backend.analyze(image_path)
@@ -72,6 +82,21 @@ class APIPartDetectionBackend(PartDetectionBackend):
             fallback_result["fallback_reason"] = self._merge_reasons(
                 fallback_result.get("fallback_reason"),
                 "LIVE2D_PART_API_URL is not configured; using heuristic fallback.",
+            )
+            return fallback_result
+        if not self._remote_upload_allowed():
+            fallback_result["backend_used"] = self.backend_name
+            fallback_result["fallback_reason"] = self._merge_reasons(
+                fallback_result.get("fallback_reason"),
+                "Remote image upload is disabled; set LIVE2D_PART_API_ALLOW_UPLOAD=1 to opt in.",
+            )
+            return fallback_result
+        host_error = self._validate_api_host()
+        if host_error:
+            fallback_result["backend_used"] = self.backend_name
+            fallback_result["fallback_reason"] = self._merge_reasons(
+                fallback_result.get("fallback_reason"),
+                host_error,
             )
             return fallback_result
 
@@ -109,6 +134,7 @@ class APIPartDetectionBackend(PartDetectionBackend):
                 },
                 "api_metadata": {
                     "model": self.model,
+                    "remote_upload_opt_in": self.allow_remote_upload,
                     "refined_parts": [
                         part.name
                         for part in merged
@@ -148,12 +174,56 @@ class APIPartDetectionBackend(PartDetectionBackend):
     def _default_transport(self, url: str, payload: JsonDict, headers: dict[str, str]) -> JsonDict:
         data = json.dumps(payload).encode("utf-8")
         req = request.Request(url, data=data, headers=headers, method="POST")
-        with request.urlopen(req, timeout=30) as response:
-            payload_text = response.read().decode("utf-8")
+        with request.urlopen(req, timeout=self.timeout_seconds) as response:
+            raw_response = response.read(self.max_response_bytes + 1)
+        if len(raw_response) > self.max_response_bytes:
+            raise ValueError("remote response exceeded LIVE2D_PART_API_MAX_RESPONSE_BYTES")
+        payload_text = raw_response.decode("utf-8")
         parsed = json.loads(payload_text)
         if not isinstance(parsed, dict):
             raise ValueError("remote response must decode to a JSON object")
         return parsed
+
+    def _env_flag(self, name: str, *, default: bool) -> bool:
+        raw = os.getenv(name)
+        if raw is None:
+            return default
+        return raw.strip().lower() in {"1", "true", "yes", "on"}
+
+    def _env_int(self, name: str, default: int) -> int:
+        raw = os.getenv(name)
+        if raw is None:
+            return default
+        try:
+            return max(1, int(raw))
+        except ValueError:
+            return default
+
+    def _allowed_hosts(self) -> set[str]:
+        raw = os.getenv("LIVE2D_PART_API_ALLOWED_HOSTS", "")
+        return {item.strip().lower() for item in raw.split(",") if item.strip()}
+
+    def _remote_upload_allowed(self) -> bool:
+        return bool(
+            self.api_url
+            and (self.api_url.startswith("inmemory://") or self.allow_remote_upload)
+        )
+
+    def _validate_api_host(self) -> str | None:
+        api_url = self.api_url
+        if not api_url or api_url.startswith("inmemory://") or not self.allowed_hosts:
+            return None
+        parsed = urlparse(api_url)
+        host = (parsed.hostname or "").lower()
+        if host not in self.allowed_hosts:
+            allowed = ", ".join(sorted(self.allowed_hosts))
+            return (
+                f"LIVE2D_PART_API_URL host '{host}' is not in "
+                f"LIVE2D_PART_API_ALLOWED_HOSTS ({allowed})."
+            )
+        if parsed.scheme != "https":
+            return "LIVE2D_PART_API_URL must use https when host allowlisting is enabled."
+        return None
 
     def _parse_remote_parts(self, response: JsonDict) -> list[DetectedPart]:
         parts_payload = response.get("parts", [])

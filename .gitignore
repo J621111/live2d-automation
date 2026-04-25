@@ -49,5 +49,6 @@ output/
 .pytest_cache/
 .mypy_cache/
 .pytest_tmp/
+.pytest_tmp_workspace/
 pytest-cache-files-*/
 tests/.pytest_tmp/

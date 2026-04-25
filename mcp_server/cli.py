@@ -19,6 +19,12 @@ from mcp_server.secure_server_impl import (
 )
 from mcp_server.tools.cubism_automation import CubismAutomationManager
 from mcp_server.tools.cubism_bridge import CubismBridge
+from mcp_server.validation import (
+    OUTPUT_ROOT,
+    InputValidationError,
+    resolve_output_dir,
+    validate_model_name,
+)
 
 JsonDict = dict[str, Any]
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -152,6 +158,21 @@ def _status_code(status: str) -> int:
     return 1
 
 
+def _invalid_input_report(command: str, message: str) -> JsonDict:
+    return {
+        "command": command,
+        "output_dir": str(OUTPUT_ROOT / "cli_errors"),
+        "model_name": "invalid_input",
+        "status": "error",
+        "steps": {
+            "validate_cli_inputs": {
+                "status": "error",
+                "message": message,
+            }
+        },
+    }
+
+
 def _latest_execution_artifact(output_dir: Path, model_name: str) -> JsonDict | None:
     pattern = f"{model_name}_cubism_dispatch_execution*.json"
     candidates = sorted(output_dir.glob(pattern), key=lambda path: path.stat().st_mtime)
@@ -165,10 +186,12 @@ def _latest_execution_artifact(output_dir: Path, model_name: str) -> JsonDict | 
     return None
 
 
-def _resolve_calibration_psd_path(args: argparse.Namespace) -> Path:
+def _resolve_calibration_psd_path(
+    args: argparse.Namespace, output_dir: Path, model_name: str
+) -> Path:
     if args.psd_path:
         return Path(args.psd_path)
-    return Path(args.output_dir) / f"{args.model_name}.psd"
+    return output_dir / f"{model_name}.psd"
 
 
 def _build_calibration_resume_context(
@@ -220,13 +243,17 @@ def _pick_status(*results: JsonDict) -> str:
 
 
 async def _run_pipeline(args: argparse.Namespace) -> JsonDict:
-    output_dir = Path(args.output_dir)
+    try:
+        output_dir = resolve_output_dir(args.output_dir)
+        model_name = validate_model_name(args.model_name)
+    except InputValidationError as exc:
+        return _invalid_input_report("run", str(exc))
     semantic_dir = output_dir / "semantic_layers"
     report: JsonDict = {
         "command": "run",
         "image_path": args.image_path,
         "output_dir": str(output_dir),
-        "model_name": args.model_name,
+        "model_name": model_name,
         "template_id": args.template_id,
         "automation_backend": args.automation_backend,
         "demo_adapter_mode": args.demo_adapter_mode,
@@ -255,7 +282,7 @@ async def _run_pipeline(args: argparse.Namespace) -> JsonDict:
             session_id,
             str(output_dir),
             template_id=args.template_id,
-            model_name=args.model_name,
+            model_name=model_name,
         )
         report["steps"]["build_cubism_psd"] = psd_result
         if psd_result.get("status") != "success":
@@ -266,7 +293,7 @@ async def _run_pipeline(args: argparse.Namespace) -> JsonDict:
             session_id,
             str(output_dir),
             template_id=args.template_id,
-            model_name=args.model_name,
+            model_name=model_name,
             editor_path=args.editor_path,
             automation_backend=args.automation_backend,
         )
@@ -281,7 +308,7 @@ async def _run_pipeline(args: argparse.Namespace) -> JsonDict:
 
         validate_result: JsonDict = {}
         if not args.skip_validate and execute_result.get("status") == "success":
-            validate_result = await validate_cubism_export(str(output_dir), args.model_name)
+            validate_result = await validate_cubism_export(str(output_dir), model_name)
             report["steps"]["validate_cubism_export"] = validate_result
 
         report["status"] = _pick_status(prepare_result, execute_result, validate_result)
@@ -292,12 +319,16 @@ async def _run_pipeline(args: argparse.Namespace) -> JsonDict:
 
 
 async def _run_template_calibration(args: argparse.Namespace) -> JsonDict:
-    output_dir = Path(args.output_dir)
-    psd_path = _resolve_calibration_psd_path(args)
+    try:
+        output_dir = resolve_output_dir(args.output_dir)
+        model_name = validate_model_name(args.model_name)
+    except InputValidationError as exc:
+        return _invalid_input_report("calibrate-template", str(exc))
+    psd_path = _resolve_calibration_psd_path(args, output_dir, model_name)
     report: JsonDict = {
         "command": "calibrate-template",
         "output_dir": str(output_dir),
-        "model_name": args.model_name,
+        "model_name": model_name,
         "template_id": args.template_id,
         "psd_path": str(psd_path),
         "editor_path": args.editor_path,
@@ -317,6 +348,8 @@ async def _run_template_calibration(args: argparse.Namespace) -> JsonDict:
             "message": f"PSD path does not exist: {psd_path}",
         }
         return report
+    resolved_psd_path = psd_path.resolve()
+    report["psd_path"] = str(resolved_psd_path)
 
     bridge = CubismBridge()
     manager = CubismAutomationManager()
@@ -324,10 +357,10 @@ async def _run_template_calibration(args: argparse.Namespace) -> JsonDict:
     report["steps"]["discover_editor"] = editor_info
 
     plan = bridge.build_plan(
-        psd_path=str(psd_path),
+        psd_path=str(resolved_psd_path),
         output_dir=str(output_dir),
         template_id=args.template_id,
-        model_name=args.model_name,
+        model_name=model_name,
         editor_info=editor_info,
         automation_backend=args.automation_backend,
     )
@@ -337,7 +370,7 @@ async def _run_template_calibration(args: argparse.Namespace) -> JsonDict:
         plan=plan,
     )
     plan["execution"] = execution_prep
-    plan_path = bridge.write_plan(plan, str(output_dir), args.model_name)
+    plan_path = bridge.write_plan(plan, str(output_dir), model_name)
     report["steps"]["prepare_cubism_automation"] = {
         "status": execution_prep.get("status", "blocked"),
         "automation_backend": args.automation_backend,
@@ -353,23 +386,24 @@ async def _run_template_calibration(args: argparse.Namespace) -> JsonDict:
         plan=plan,
         execution=execution_prep,
         template_id=args.template_id,
-        model_name=args.model_name,
-        psd_path=str(psd_path),
+        model_name=model_name,
+        psd_path=str(resolved_psd_path),
         output_dir=str(output_dir),
         editor_info=editor_info,
     )
-    bundle_path = manager.write_dispatch_bundle(bundle, str(output_dir), args.model_name)
+    bundle_path = manager.write_dispatch_bundle(bundle, str(output_dir), model_name)
     report["steps"]["prepare_cubism_automation"]["dispatch_bundle_path"] = bundle_path
 
     if args.prepare_only:
         report["status"] = execution_prep.get("status", "blocked")
         return report
 
-    resume_context = _build_calibration_resume_context(args, psd_path, editor_info)
+    resume_context = _build_calibration_resume_context(args, resolved_psd_path, editor_info)
+    resume_context["model_name"] = model_name
     previous_execution = None
     effective_resume = False
     if args.resume:
-        candidate_execution = _latest_execution_artifact(output_dir, args.model_name)
+        candidate_execution = _latest_execution_artifact(output_dir, model_name)
         can_resume, resume_message = _validate_resume_context(
             candidate_execution,
             resume_context,
@@ -391,13 +425,13 @@ async def _run_template_calibration(args: argparse.Namespace) -> JsonDict:
     execution["resume_context"] = resume_context
     execution_suffix = "_resume" if effective_resume else ""
     execution_path = manager.write_dispatch_execution(
-        execution, str(output_dir), args.model_name, suffix=execution_suffix
+        execution, str(output_dir), model_name, suffix=execution_suffix
     )
     calibration_report = manager.build_profile_calibration_report(bundle, execution)
     calibration_report_path = manager.write_profile_calibration_report(
         calibration_report,
         str(output_dir),
-        args.model_name,
+        model_name,
         suffix=execution_suffix,
     )
     report["steps"]["execute_cubism_dispatch"] = {
