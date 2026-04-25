@@ -75,9 +75,9 @@ extend-exclude = '''
 (?x)(
     ^/output(?:/|$)
   | ^/\.pytest_tmp(?:/|$)
+  | ^/\.pytest_tmp_workspace(?:/|$)
   | ^/pytest-cache-files-.*
   | ^/test_(live2d_pipeline|optimized|simple)\.py$
-  | ^/core/deformers\.py$
 )
 '''
 
@@ -85,11 +85,11 @@ extend-exclude = '''
 line-length = 100
 extend-exclude = [
     "output",
+    ".pytest_tmp_workspace",
     "pytest-cache-files-*",
     "test_live2d_pipeline.py",
     "test_optimized.py",
     "test_simple.py",
-    "core/deformers.py",
 ]
 
 [tool.ruff.lint]
@@ -102,7 +102,7 @@ select = ["E", "F", "W", "I", "N", "UP", "B", "A", "C4", "SIM"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-norecursedirs = ["output", ".git", ".mypy_cache", ".ruff_cache", ".pytest_tmp", "pytest-cache-files-*"]
+norecursedirs = ["output", ".git", ".mypy_cache", ".ruff_cache", ".pytest_tmp", ".pytest_tmp_workspace", "pytest-cache-files-*"]
 asyncio_mode = "auto"
 addopts = "-p no:cacheprovider"
 
@@ -112,4 +112,4 @@ warn_return_any = true
 warn_unused_configs = true
 ignore_missing_imports = true
 follow_imports = "skip"
-exclude = '(?x)(^output(?:[\\/]|$)|^\.pytest_tmp(?:[\\/]|$)|^pytest-cache-files-.*|^test_(live2d_pipeline|optimized|simple)\.py$|^core[\\/]deformers\.py$)'
+exclude = '(?x)(^output(?:[\\/]|$)|^\.pytest_tmp(?:[\\/]|$)|^\.pytest_tmp_workspace(?:[\\/]|$)|^pytest-cache-files-.*|^test_(live2d_pipeline|optimized|simple)\.py$)'

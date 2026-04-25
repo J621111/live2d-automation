@@ -3,14 +3,16 @@
 Live2D 参数管理和插值
 """
 
+from __future__ import annotations
+
 from dataclasses import dataclass
-from typing import cast
+from typing import Any
 
 import numpy as np
 from loguru import logger
 
 
-@dataclass
+@dataclass(slots=True)
 class Parameter:
     """Live2D 参数定义"""
 
@@ -21,171 +23,131 @@ class Parameter:
     default_value: float
     current_value: float = 0.0
 
-    def __post_init__(self):
+    def __post_init__(self) -> None:
         self.current_value = self.default_value
 
-    def set_value(self, value: float):
-        """设置参数值（带限制）"""
+    def set_value(self, value: float) -> None:
         self.current_value = max(self.min_value, min(self.max_value, value))
 
     def normalize(self, value: float) -> float:
-        """将值归一化到 0-1 范围"""
-        return (value - self.min_value) / (self.max_value - self.min_value)
+        span = self.max_value - self.min_value
+        if span == 0:
+            return 0.0
+        return (value - self.min_value) / span
 
     def denormalize(self, normalized: float) -> float:
-        """从归一化值恢复"""
         return normalized * (self.max_value - self.min_value) + self.min_value
 
 
 class ParameterSystem:
     """Live2D 参数系统"""
 
-    def __init__(self):
+    def __init__(self) -> None:
         self.parameters: dict[str, Parameter] = {}
         self.groups: dict[str, list[str]] = {}
-        self.blend_shapes: dict[str, dict] = {}
+        self.blend_shapes: dict[str, dict[str, Any]] = {}
 
-    def add_parameter(self, param: Parameter):
-        """添加参数"""
+    def add_parameter(self, param: Parameter) -> None:
         self.parameters[param.id] = param
         logger.debug(f"添加参数: {param.id}")
 
-    def add_parameters(self, param_list: list[dict]):
-        """批量添加参数"""
-        for p in param_list:
-            param = Parameter(
-                id=p["id"],
-                name=p["name"],
-                min_value=p.get("min", 0),
-                max_value=p.get("max", 1),
-                default_value=p.get("default", 0),
+    def add_parameters(self, param_list: list[dict[str, Any]]) -> None:
+        for payload in param_list:
+            self.add_parameter(
+                Parameter(
+                    id=str(payload["id"]),
+                    name=str(payload["name"]),
+                    min_value=float(payload.get("min", 0.0)),
+                    max_value=float(payload.get("max", 1.0)),
+                    default_value=float(payload.get("default", 0.0)),
+                )
             )
-            self.add_parameter(param)
 
     def get_parameter(self, param_id: str) -> Parameter | None:
-        """获取参数"""
         return self.parameters.get(param_id)
 
-    def set_value(self, param_id: str, value: float):
-        """设置参数值"""
-        if param_id in self.parameters:
-            self.parameters[param_id].set_value(value)
+    def set_value(self, param_id: str, value: float) -> None:
+        param = self.parameters.get(param_id)
+        if param is not None:
+            param.set_value(value)
 
-    def set_values(self, values: dict[str, float]):
-        """批量设置参数值"""
+    def set_values(self, values: dict[str, float]) -> None:
         for param_id, value in values.items():
             self.set_value(param_id, value)
 
-    def create_group(self, name: str, param_ids: list[str]):
-        """创建参数组"""
+    def create_group(self, name: str, param_ids: list[str]) -> None:
         self.groups[name] = param_ids
         logger.debug(f"创建参数组: {name} ({len(param_ids)} 个参数)")
 
     def interpolate(
         self,
-        param_id: str,
+        _param_id: str,
         start: float,
         end: float,
         progress: float,
         easing: str = "linear",
     ) -> float:
-        """
-        参数插值
-
-        Args:
-            param_id: 参数 ID
-            start: 起始值
-            end: 结束值
-            progress: 进度 (0-1)
-            easing: 缓动函数类型
-
-        Returns:
-            插值后的值
-        """
-        t = self._apply_easing(progress, easing)
-        value = start + (end - start) * t
-        return value
+        t = self._apply_easing(max(0.0, min(1.0, progress)), easing)
+        return start + (end - start) * t
 
     def _apply_easing(self, t: float, easing: str) -> float:
-        """应用缓动函数"""
         if easing == "linear":
             return t
-        elif easing == "ease_in":
+        if easing == "ease_in":
             return t * t
-        elif easing == "ease_out":
+        if easing == "ease_out":
             return 1 - (1 - t) * (1 - t)
-        elif easing == "ease_in_out":
-            if t < 0.5:
-                return 2 * t * t
-            else:
-                return 1 - (-2 * t + 2) ** 2 / 2
-        elif easing == "elastic":
+        if easing == "ease_in_out":
+            return 2 * t * t if t < 0.5 else 1 - (-2 * t + 2) ** 2 / 2
+        if easing == "elastic":
+            if t == 0 or t == 1:
+                return t
             c4 = (2 * np.pi) / 3
-            if t == 0:
-                return 0
-            elif t == 1:
-                return 1
-            else:
-                value = -(2 ** (10 * t - 10)) * np.sin((t * 10 - 10.75) * c4)
-                return cast(float, value)
-        else:
-            return t
+            return float(-(2 ** (10 * t - 10)) * np.sin((t * 10 - 10.75) * c4))
+        return t
 
-    def create_blend_shape(self, name: str, targets: dict[str, float]):
-        """
-        创建混合形状（Blend Shape）
-
-        Args:
-            name: 混合形状名称
-            targets: 目标参数值字典
-        """
+    def create_blend_shape(self, name: str, targets: dict[str, float]) -> None:
         self.blend_shapes[name] = {"name": name, "targets": targets}
         logger.debug(f"创建混合形状: {name}")
 
-    def apply_blend_shape(self, name: str, weight: float = 1.0):
-        """
-        应用混合形状
-
-        Args:
-            name: 混合形状名称
-            weight: 权重 (0-1)
-        """
-        if name not in self.blend_shapes:
+    def apply_blend_shape(self, name: str, weight: float = 1.0) -> None:
+        blend = self.blend_shapes.get(name)
+        if blend is None:
             logger.warning(f"混合形状不存在: {name}")
             return
 
-        blend = self.blend_shapes[name]
-        for param_id, target_value in blend["targets"].items():
-            if param_id in self.parameters:
-                param = self.parameters[param_id]
-                # 插值到目标值
-                new_value = param.default_value + (target_value - param.default_value) * weight
-                param.set_value(new_value)
+        clamped_weight = max(0.0, min(1.0, weight))
+        targets = dict(blend.get("targets", {}))
+        for param_id, target_value in targets.items():
+            param = self.parameters.get(param_id)
+            if param is None:
+                continue
+            new_value = (
+                param.default_value + (float(target_value) - param.default_value) * clamped_weight
+            )
+            param.set_value(new_value)
 
-    def reset_all(self):
-        """重置所有参数到默认值"""
+    def reset_all(self) -> None:
         for param in self.parameters.values():
             param.current_value = param.default_value
         logger.debug("重置所有参数")
 
     def get_state(self) -> dict[str, float]:
-        """获取当前所有参数值"""
         return {param_id: param.current_value for param_id, param in self.parameters.items()}
 
-    def export_to_json(self) -> dict:
-        """导出为 Live2D JSON 格式"""
+    def export_to_json(self) -> dict[str, Any]:
         return {
             "Version": 3,
             "Parameters": [
                 {
-                    "Id": p.id,
-                    "Name": p.name,
-                    "Min": p.min_value,
-                    "Max": p.max_value,
-                    "Default": p.default_value,
-                    "Value": p.current_value,
+                    "Id": param.id,
+                    "Name": param.name,
+                    "Min": param.min_value,
+                    "Max": param.max_value,
+                    "Default": param.default_value,
+                    "Value": param.current_value,
                 }
-                for p in self.parameters.values()
+                for param in self.parameters.values()
             ],
             "Groups": [{"Name": name, "Ids": ids} for name, ids in self.groups.items()],
         }

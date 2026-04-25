@@ -3,28 +3,22 @@
 实现 Live2D 的各种变形效果
 """
 
+from __future__ import annotations
+
+from typing import Any
+
 import numpy as np
-from typing import Dict, List, Tuple, Any
-from loguru import logger
+
+JsonDict = dict[str, Any]
 
 
 class DeformerSystem:
     """Live2D 变形器系统"""
 
-    def __init__(self):
-        self.deformers = []
+    def __init__(self) -> None:
+        self.deformers: list[JsonDict] = []
 
-    def create_warp_deformer(self, mesh: Dict, control_points: List[Dict]) -> Dict:
-        """
-        创建弯曲变形器
-
-        Args:
-            mesh: ArtMesh 网格
-            control_points: 控制点列表
-
-        Returns:
-            弯曲变形器配置
-        """
+    def create_warp_deformer(self, mesh: JsonDict, control_points: list[JsonDict]) -> JsonDict:
         deformer = {
             "type": "warp",
             "id": f"warp_{len(self.deformers)}",
@@ -32,129 +26,22 @@ class DeformerSystem:
             "control_points": control_points,
             "influence": 1.0,
         }
-
         self.deformers.append(deformer)
         return deformer
 
-    def create_rotation_deformer(self, mesh: Dict, pivot: Dict) -> Dict:
-        """
-        创建旋转变形器
-
-        Args:
-            mesh: ArtMesh 网格
-            pivot: 旋转中心点
-
-        Returns:
-            旋转变形器配置
-        """
+    def create_rotation_deformer(self, mesh: JsonDict, pivot: JsonDict) -> JsonDict:
         deformer = {
             "type": "rotation",
             "id": f"rotation_{len(self.deformers)}",
             "mesh": mesh,
             "pivot": pivot,
-            "angle": 0,
+            "angle": 0.0,
             "influence": 1.0,
         }
-
         self.deformers.append(deformer)
         return deformer
 
-    def apply_deformation(
-        self, vertices: List[Dict], deformer: Dict, parameter_value: float
-    ) -> List[Dict]:
-        """
-        应用变形到顶点
-
-        Args:
-            vertices: 原始顶点
-            deformer: 变形器配置
-            parameter_value: 参数值（-1 到 1）
-
-        Returns:
-            变形后的顶点
-        """
-        deformed = []
-
-        if deformer["type"] == "warp":
-            deformed = self._apply_warp(vertices, deformer, parameter_value)
-        elif deformer["type"] == "rotation":
-            deformed = self._apply_rotation(vertices, deformer, parameter_value)
-
-        return deformed
-
-    def _apply_warp(
-        self, vertices: List[Dict], deformer: Dict, parameter_value: float
-    ) -> List[Dict]:
-        """应用弯曲变形"""
-        control_points = deformer["control_points"]
-        deformed = []
-
-        for v in vertices:
-            # 计算到控制点的影响
-            displacement = {"x": 0, "y": 0}
-
-            for cp in control_points:
-                # 距离衰减
-                dx = v["x"] - cp["x"]
-                dy = v["y"] - cp["y"]
-                distance = np.sqrt(dx**2 + dy**2)
-
-                # 高斯衰减
-                influence = np.exp(-(distance**2) / (2 * 50**2))
-
-                # 应用位移
-                displacement["x"] += cp.get("offset_x", 0) * influence * parameter_value
-                displacement["y"] += cp.get("offset_y", 0) * influence * parameter_value
-
-            deformed.append(
-                {
-                    "x": v["x"] + displacement["x"],
-                    "y": v["y"] + displacement["y"],
-                    "u": v["u"],
-                    "v": v["v"],
-                }
-            )
-
-        return deformed
-
-    def _apply_rotation(
-        self, vertices: List[Dict], deformer: Dict, parameter_value: float
-    ) -> List[Dict]:
-        """应用旋转变形"""
-        pivot = deformer["pivot"]
-        angle = parameter_value * 30  # 最大旋转 30 度
-
-        # 转换为弧度
-        angle_rad = np.radians(angle)
-        cos_a = np.cos(angle_rad)
-        sin_a = np.sin(angle_rad)
-
-        deformed = []
-
-        for v in vertices:
-            # 相对于旋转中心的坐标
-            dx = v["x"] - pivot["x"]
-            dy = v["y"] - pivot["y"]
-
-            # 应用旋转
-            new_x = pivot["x"] + dx * cos_a - dy * sin_a
-            new_y = pivot["y"] + dx * sin_a + dy * cos_a
-
-            deformed.append({"x": new_x, "y": new_y, "u": v["u"], "v": v["v"]})
-
-        return deformed
-
-    def create_bezier_deformer(self, mesh: Dict, curve_points: List[Dict]) -> Dict:
-        """
-        创建贝塞尔曲线变形器
-
-        Args:
-            mesh: ArtMesh 网格
-            curve_points: 贝塞尔曲线控制点
-
-        Returns:
-            贝塞尔变形器配置
-        """
+    def create_bezier_deformer(self, mesh: JsonDict, curve_points: list[JsonDict]) -> JsonDict:
         deformer = {
             "type": "bezier",
             "id": f"bezier_{len(self.deformers)}",
@@ -162,42 +49,86 @@ class DeformerSystem:
             "curve": curve_points,
             "influence": 1.0,
         }
-
         self.deformers.append(deformer)
         return deformer
 
-    def evaluate_bezier(self, t: float, points: List[Dict]) -> Tuple[float, float]:
-        """
-        计算贝塞尔曲线上的点
+    def apply_deformation(
+        self, vertices: list[JsonDict], deformer: JsonDict, parameter_value: float
+    ) -> list[JsonDict]:
+        deformer_type = deformer.get("type")
+        if deformer_type == "warp":
+            return self._apply_warp(vertices, deformer, parameter_value)
+        if deformer_type == "rotation":
+            return self._apply_rotation(vertices, deformer, parameter_value)
+        return list(vertices)
 
-        Args:
-            t: 参数 (0-1)
-            points: 控制点列表
+    def _apply_warp(
+        self, vertices: list[JsonDict], deformer: JsonDict, parameter_value: float
+    ) -> list[JsonDict]:
+        control_points = list(deformer.get("control_points", []))
+        deformed: list[JsonDict] = []
+        for vertex in vertices:
+            displacement_x = 0.0
+            displacement_y = 0.0
+            for control_point in control_points:
+                dx = float(vertex["x"]) - float(control_point["x"])
+                dy = float(vertex["y"]) - float(control_point["y"])
+                distance = np.sqrt(dx**2 + dy**2)
+                influence = np.exp(-(distance**2) / (2 * 50**2))
+                displacement_x += float(control_point.get("offset_x", 0.0)) * influence
+                displacement_y += float(control_point.get("offset_y", 0.0)) * influence
+            deformed.append(
+                {
+                    "x": float(vertex["x"]) + displacement_x * parameter_value,
+                    "y": float(vertex["y"]) + displacement_y * parameter_value,
+                    "u": vertex["u"],
+                    "v": vertex["v"],
+                }
+            )
+        return deformed
 
-        Returns:
-            (x, y) 坐标
-        """
-        n = len(points) - 1
-        x, y = 0, 0
+    def _apply_rotation(
+        self, vertices: list[JsonDict], deformer: JsonDict, parameter_value: float
+    ) -> list[JsonDict]:
+        pivot = dict(deformer.get("pivot", {"x": 0.0, "y": 0.0}))
+        angle_rad = np.radians(parameter_value * 30.0)
+        cos_a = np.cos(angle_rad)
+        sin_a = np.sin(angle_rad)
+        pivot_x = float(pivot.get("x", 0.0))
+        pivot_y = float(pivot.get("y", 0.0))
 
-        for i, p in enumerate(points):
-            # 伯恩斯坦多项式
-            coef = self._binomial(n, i) * (t**i) * ((1 - t) ** (n - i))
-            x += coef * p["x"]
-            y += coef * p["y"]
+        deformed: list[JsonDict] = []
+        for vertex in vertices:
+            dx = float(vertex["x"]) - pivot_x
+            dy = float(vertex["y"]) - pivot_y
+            deformed.append(
+                {
+                    "x": float(pivot_x + dx * cos_a - dy * sin_a),
+                    "y": float(pivot_y + dx * sin_a + dy * cos_a),
+                    "u": vertex["u"],
+                    "v": vertex["v"],
+                }
+            )
+        return deformed
 
-        return x, y
+    def evaluate_bezier(self, t: float, points: list[JsonDict]) -> tuple[float, float]:
+        degree = len(points) - 1
+        x_value = 0.0
+        y_value = 0.0
+        for index, point in enumerate(points):
+            coefficient = self._binomial(degree, index) * (t**index) * ((1 - t) ** (degree - index))
+            x_value += coefficient * float(point["x"])
+            y_value += coefficient * float(point["y"])
+        return x_value, y_value
 
     def _binomial(self, n: int, k: int) -> int:
-        """计算二项式系数"""
         if k < 0 or k > n:
             return 0
         if k == 0 or k == n:
             return 1
 
-        k = min(k, n - k)
+        reduced_k = min(k, n - k)
         result = 1
-        for i in range(k):
-            result = result * (n - i) // (i + 1)
-
+        for index in range(reduced_k):
+            result = result * (n - index) // (index + 1)
         return result
