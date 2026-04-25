@@ -205,8 +205,7 @@ class APIPartDetectionBackend(PartDetectionBackend):
 
     def _remote_upload_allowed(self) -> bool:
         return bool(
-            self.api_url
-            and (self.api_url.startswith("inmemory://") or self.allow_remote_upload)
+            self.api_url and (self.api_url.startswith("inmemory://") or self.allow_remote_upload)
         )
 
     def _validate_api_host(self) -> str | None:

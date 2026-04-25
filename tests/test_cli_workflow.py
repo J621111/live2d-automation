@@ -295,8 +295,6 @@ def test_cli_calibrate_template_ignores_stale_resume_execution(tmp_path: Path) -
     launch_step = next(step for step in executed_steps if step["source_action"] == "launch_editor")
     assert launch_step["status"] == "success"
     execution = json.loads(
-        (output_dir / "CalibrateResume_cubism_dispatch_execution.json").read_text(
-            encoding="utf-8"
-        )
+        (output_dir / "CalibrateResume_cubism_dispatch_execution.json").read_text(encoding="utf-8")
     )
     assert execution["resume_context"]["psd_path"] == str(psd_path.resolve())
