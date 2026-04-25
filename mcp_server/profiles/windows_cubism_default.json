@@ -3,6 +3,7 @@
   "window_title_contains": "Cubism Editor",
   "window_probe_candidates": [
     "Cubism Editor",
+    "Start",
     "Open",
     "Import PSD",
     "Template",
@@ -16,6 +17,8 @@
   "export_shortcut": "^%s",
   "launch_wait_seconds": 2.0,
   "activation_wait_seconds": 1.0,
+  "document_window_timeout_seconds": 20.0,
+  "document_window_poll_seconds": 0.25,
   "dialog_wait_seconds": 0.8,
   "template_dialog_wait_seconds": 0.8,
   "export_dialog_wait_seconds": 1.0,
@@ -28,6 +31,11 @@
   },
   "known_dialog_recovery": {
     "import_psd": [
+      {
+        "title_contains": "Start",
+        "keys": "{ESC}",
+        "wait_seconds": 0.2
+      },
       {
         "title_contains": "Open",
         "keys": "~",

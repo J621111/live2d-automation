@@ -103,10 +103,16 @@ result = await full_pipeline(
 ## Safety constraints
 
 - `output_dir` must remain inside the project `output/` directory
+- For tests and controlled local runs, `LIVE2D_OUTPUT_ROOT` can point to another directory inside the project; MCP and CLI entrypoints will resolve `output_dir` under that root
 - `model_name` only supports letters, digits, `_`, and `-`
 - input image formats: `png`, `jpg`, `jpeg`, `webp`
 - input image limits: 20 MiB, 4096x4096, 16,777,216 total pixels
 - supported motion types: `idle`, `tap`, `move`, `emotional`
+
+Remote semantic part detection is privacy opt-in. When `LIVE2D_PART_BACKEND=api`, set
+`LIVE2D_PART_API_ALLOW_UPLOAD=1` before image bytes are sent to `LIVE2D_PART_API_URL`.
+Use `LIVE2D_PART_API_ALLOWED_HOSTS` as a comma-separated host allowlist for locked-down
+environments.
 
 ## Native GUI adapter
 
@@ -170,6 +176,21 @@ Calibrate that sequence against the Cubism menu path documented in the official 
 [Modeling] -> [Model template] -> [Apply template](https://docs.live2d.com/en/cubism-editor-manual/applying-the-model-template/).
 
 If `apply_template` fails without an artifact, the calibration report will now explicitly tell you whether `template_menu_sequence` or `template_shortcut` is still missing, and it will repeat that recommended menu path in the diagnostics.
+
+For `export_embedded_data`, the built-in controller can also be calibrated with a menu-driven sequence when the shortcut path is unreliable. Use `export_menu_sequence` in [mcp_server/profiles/windows_cubism_default.json](mcp_server/profiles/windows_cubism_default.json) for a sequence such as:
+
+```json
+"export_menu_sequence": [
+  { "keys": "%f", "wait_seconds": 0.2 },
+  { "keys": "e", "wait_seconds": 0.2 },
+  { "keys": "m", "wait_seconds": 0.2 }
+]
+```
+
+Calibrate that sequence against the Cubism menu path documented in the official editor manual:
+[File] -> [Export Embedded File] -> [Export as MOC3 file](https://docs.live2d.com/en/cubism-editor-manual/export-moc3-motion3-files/).
+
+If `export_embedded_data` fails without opening a dialog, the calibration report will now explicitly tell you whether `export_menu_sequence` or `export_shortcut` is still missing, and it will repeat that recommended menu path in the diagnostics.
 
 ## Export notes
 

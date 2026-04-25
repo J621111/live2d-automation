@@ -11,6 +11,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, cast
 
+from mcp_server.artifacts import ArtifactStore, redact_command
 from mcp_server.tools.export_validator import CubismExportValidator
 from mcp_server.tools.native_gui_controller import NativeWindowsGUIController
 
@@ -380,8 +381,8 @@ class CubismAutomationManager:
                 "message": "Execution PoC currently supports only the native_gui backend.",
             }
 
-        output_dir = Path(str(bundle.get("output_dir", ".")))
-        output_dir.mkdir(parents=True, exist_ok=True)
+        artifact_store = ArtifactStore(str(bundle.get("output_dir", ".")))
+        output_dir = artifact_store.output_dir
         editor_info = dict(bundle.get("editor", {}))
         editor_path = (
             Path(str(editor_info.get("editor_path", "")))
@@ -573,11 +574,9 @@ class CubismAutomationManager:
     def write_dispatch_execution(
         self, execution: JsonDict, output_dir: str, model_name: str, suffix: str = ""
     ) -> str:
-        output_path = Path(output_dir)
-        output_path.mkdir(parents=True, exist_ok=True)
-        execution_path = output_path / f"{model_name}_cubism_dispatch_execution{suffix}.json"
-        execution_path.write_text(
-            json.dumps(execution, indent=2, ensure_ascii=False), encoding="utf-8"
+        artifact_store = ArtifactStore(output_dir)
+        execution_path = artifact_store.write_json(
+            f"{model_name}_cubism_dispatch_execution{suffix}.json", execution
         )
         return str(execution_path)
 
@@ -634,6 +633,8 @@ class CubismAutomationManager:
             }
             if action == "apply_template":
                 diagnostics.update(self._apply_template_profile_diagnostics(profile))
+            elif action == "export_embedded_data":
+                diagnostics.update(self._export_profile_diagnostics(profile))
             artifact_path = step.get("artifact_path")
             if not artifact_path:
                 if diagnostics:
@@ -723,10 +724,10 @@ class CubismAutomationManager:
     def write_profile_calibration_report(
         self, report: JsonDict, output_dir: str, model_name: str, suffix: str = ""
     ) -> str:
-        output_path = Path(output_dir)
-        output_path.mkdir(parents=True, exist_ok=True)
-        report_path = output_path / f"{model_name}_cubism_profile_calibration{suffix}.json"
-        report_path.write_text(json.dumps(report, indent=2, ensure_ascii=False), encoding="utf-8")
+        artifact_store = ArtifactStore(output_dir)
+        report_path = artifact_store.write_json(
+            f"{model_name}_cubism_profile_calibration{suffix}.json", report
+        )
         return str(report_path)
 
     def _read_json_artifact(self, artifact_path: str | os.PathLike[str]) -> JsonDict | None:
@@ -821,6 +822,30 @@ class CubismAutomationManager:
             ),
         }
 
+    def _export_profile_diagnostics(self, profile: JsonDict) -> JsonDict:
+        shortcut = str(profile.get("export_shortcut", "")).strip()
+        raw_menu_sequence = profile.get("export_menu_sequence", [])
+        menu_sequence = (
+            [entry for entry in raw_menu_sequence if isinstance(entry, dict)]
+            if isinstance(raw_menu_sequence, list)
+            else []
+        )
+        executable_sequence = [
+            entry for entry in menu_sequence if str(entry.get("keys", "")).strip()
+        ]
+        return {
+            "export_shortcut_configured": bool(shortcut),
+            "export_menu_sequence_configured": bool(executable_sequence),
+            "export_menu_sequence_length": len(executable_sequence),
+            "export_menu_sequence_entries": len(menu_sequence),
+            "export_embedded_data_ready": bool(shortcut or executable_sequence),
+            "recommended_menu_path": ["File", "Export Embedded File", "Export as MOC3 file"],
+            "documentation_hint": (
+                "Calibrate this action against the Cubism menu path "
+                "[File] -> [Export Embedded File] -> [Export as MOC3 file]."
+            ),
+        }
+
     def _calibration_suggestions(
         self,
         missing_probe_candidates: list[str],
@@ -851,6 +876,17 @@ class CubismAutomationManager:
                     "`apply_template` using the Cubism menu path "
                     "[Modeling] -> [Model template] -> [Apply template], or provide an "
                     "adapter-backed implementation, before expecting template application "
+                    "to run in execute mode."
+                )
+            if (
+                action == "export_embedded_data"
+                and diagnostics.get("export_embedded_data_ready") is False
+            ):
+                suggestions.append(
+                    "Configure `export_menu_sequence` in the native GUI profile for "
+                    "`export_embedded_data` using the Cubism menu path "
+                    "[File] -> [Export Embedded File] -> [Export as MOC3 file], or provide "
+                    "an adapter-backed implementation, before expecting embedded export "
                     "to run in execute mode."
                 )
         if not suggestions:
@@ -897,18 +933,13 @@ class CubismAutomationManager:
 
         script_like = editor_path.suffix.lower() in _SCRIPT_SUFFIXES
         if not script_like and os.getenv("LIVE2D_NATIVE_GUI_ALLOW_BINARY_EXEC") != "1":
-            artifact_path = output_dir / "native_gui_launch_request.json"
-            artifact_path.write_text(
-                json.dumps(
-                    {
-                        "editor_path": str(editor_path),
-                        "mode": "record_only",
-                        "reason": "Binary launch is disabled for the execution PoC.",
-                    },
-                    indent=2,
-                    ensure_ascii=False,
-                ),
-                encoding="utf-8",
+            artifact_path = ArtifactStore(output_dir).write_json(
+                "native_gui_launch_request.json",
+                {
+                    "editor_path": str(editor_path),
+                    "mode": "record_only",
+                    "reason": "Binary launch is disabled for the execution PoC.",
+                },
             )
             return {
                 "source_action": "launch_editor",
@@ -939,19 +970,14 @@ class CubismAutomationManager:
                 "details": str(exc),
             }
 
-        artifact_path = output_dir / "native_gui_launch_result.json"
-        artifact_path.write_text(
-            json.dumps(
-                {
-                    "command": command,
-                    "returncode": completed.returncode,
-                    "stdout": completed.stdout.strip(),
-                    "stderr": completed.stderr.strip(),
-                },
-                indent=2,
-                ensure_ascii=False,
-            ),
-            encoding="utf-8",
+        artifact_path = ArtifactStore(output_dir).write_json(
+            "native_gui_launch_result.json",
+            {
+                "command": redact_command(command),
+                "returncode": completed.returncode,
+                "stdout": completed.stdout.strip(),
+                "stderr": completed.stderr.strip(),
+            },
         )
         return {
             "source_action": "launch_editor",
@@ -1015,20 +1041,15 @@ class CubismAutomationManager:
         if adapter_result is not None:
             return adapter_result
 
-        artifact_path = output_dir / "native_gui_import_request.json"
-        artifact_path.write_text(
-            json.dumps(
-                {
-                    "psd_path": str(psd_path),
-                    "target": "Cubism Editor",
-                    "model_name": bundle.get("model_name"),
-                    "template_id": bundle.get("template_id"),
-                    "dispatch_kind": "desktop_intent",
-                },
-                indent=2,
-                ensure_ascii=False,
-            ),
-            encoding="utf-8",
+        artifact_path = ArtifactStore(output_dir).write_json(
+            "native_gui_import_request.json",
+            {
+                "psd_path": str(psd_path),
+                "target": "Cubism Editor",
+                "model_name": bundle.get("model_name"),
+                "template_id": bundle.get("template_id"),
+                "dispatch_kind": "desktop_intent",
+            },
         )
         return {
             "source_action": "import_psd",
@@ -1168,20 +1189,15 @@ class CubismAutomationManager:
         if completed.returncode == _NATIVE_ADAPTER_UNSUPPORTED_EXIT_CODE and fallback_on_nonzero:
             return None
 
-        artifact_path = output_dir / f"native_gui_{action}_adapter_result.json"
-        artifact_path.write_text(
-            json.dumps(
-                {
-                    "command": command,
-                    "returncode": completed.returncode,
-                    "stdout": completed.stdout.strip(),
-                    "stderr": completed.stderr.strip(),
-                    "adapter": native_adapter,
-                },
-                indent=2,
-                ensure_ascii=False,
-            ),
-            encoding="utf-8",
+        artifact_path = ArtifactStore(output_dir).write_json(
+            f"native_gui_{action}_adapter_result.json",
+            {
+                "command": redact_command(command),
+                "returncode": completed.returncode,
+                "stdout": completed.stdout.strip(),
+                "stderr": completed.stderr.strip(),
+                "adapter": native_adapter,
+            },
         )
         return {
             "source_action": action,
@@ -1218,18 +1234,13 @@ class CubismAutomationManager:
         if adapter_result is not None:
             return adapter_result
 
-        artifact_path = output_dir / "native_gui_apply_template_request.json"
-        artifact_path.write_text(
-            json.dumps(
-                {
-                    "template_id": bundle.get("template_id"),
-                    "model_name": bundle.get("model_name"),
-                    "dispatch_kind": "desktop_intent",
-                },
-                indent=2,
-                ensure_ascii=False,
-            ),
-            encoding="utf-8",
+        artifact_path = ArtifactStore(output_dir).write_json(
+            "native_gui_apply_template_request.json",
+            {
+                "template_id": bundle.get("template_id"),
+                "model_name": bundle.get("model_name"),
+                "dispatch_kind": "desktop_intent",
+            },
         )
         return {
             "source_action": "apply_template",
@@ -1265,18 +1276,13 @@ class CubismAutomationManager:
         if adapter_result is not None:
             return adapter_result
 
-        artifact_path = output_dir / "native_gui_export_request.json"
-        artifact_path.write_text(
-            json.dumps(
-                {
-                    "output_dir": str(output_dir),
-                    "model_name": bundle.get("model_name"),
-                    "dispatch_kind": "desktop_intent",
-                },
-                indent=2,
-                ensure_ascii=False,
-            ),
-            encoding="utf-8",
+        artifact_path = ArtifactStore(output_dir).write_json(
+            "native_gui_export_request.json",
+            {
+                "output_dir": str(output_dir),
+                "model_name": bundle.get("model_name"),
+                "dispatch_kind": "desktop_intent",
+            },
         )
         return {
             "source_action": "export_embedded_data",
@@ -1289,10 +1295,8 @@ class CubismAutomationManager:
         model_name = str(bundle.get("model_name", "ATRI"))
         validator = CubismExportValidator()
         result = validator.validate(str(output_dir), model_name)
-        artifact_path = output_dir / "native_gui_validate_export_result.json"
-        artifact_path.write_text(
-            json.dumps(result, indent=2, ensure_ascii=False),
-            encoding="utf-8",
+        artifact_path = ArtifactStore(output_dir).write_json(
+            "native_gui_validate_export_result.json", result
         )
         return {
             "source_action": "validate_export_bundle",
@@ -1307,13 +1311,8 @@ class CubismAutomationManager:
         }
 
     def write_dispatch_bundle(self, bundle: JsonDict, output_dir: str, model_name: str) -> str:
-        output_path = Path(output_dir)
-        output_path.mkdir(parents=True, exist_ok=True)
-        bundle_path = output_path / f"{model_name}_cubism_dispatch_bundle.json"
-        bundle_path.write_text(
-            json.dumps(bundle, indent=2, ensure_ascii=False),
-            encoding="utf-8",
-        )
+        artifact_store = ArtifactStore(output_dir)
+        bundle_path = artifact_store.write_json(f"{model_name}_cubism_dispatch_bundle.json", bundle)
         return str(bundle_path)
 
     def _dispatch_intent_for(self, action: str, backend_name: str) -> str:

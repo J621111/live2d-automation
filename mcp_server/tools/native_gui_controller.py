@@ -7,9 +7,15 @@ import time
 from pathlib import Path
 from typing import Any
 
+from mcp_server.artifacts import redact_sensitive
+
 JsonDict = dict[str, Any]
 _CONTROLLER_TIMEOUT_SECONDS = 10
 _SUPPORTED_MODES = {"disabled", "dry_run", "execute"}
+
+
+def _artifact_json(payload: JsonDict) -> str:
+    return json.dumps(redact_sensitive(payload), indent=2, ensure_ascii=False)
 
 
 class NativeWindowsGUIController:
@@ -119,7 +125,7 @@ class NativeWindowsGUIController:
             post_success_check = _post_success_check
         else:
             script = self._import_script(psd_path, profile)
-        return self._execute_action(
+        result = self._execute_action(
             controller=controller,
             output_dir=output_dir,
             source_action="import_psd",
@@ -136,6 +142,41 @@ class NativeWindowsGUIController:
             post_success_check=post_success_check,
             capture_on_success=True,
         )
+        if (
+            use_launch_argument
+            and controller.get("mode") == "execute"
+            and result.get("status") == "error"
+            and profile.get("import_launch_argument_fallback", True)
+        ):
+            fallback_result = self._execute_action(
+                controller=controller,
+                output_dir=output_dir,
+                source_action="import_psd",
+                script_stem="native_gui_builtin_import_fallback",
+                script=self._import_script(psd_path, profile),
+                dry_run_payload={
+                    "psd_path": str(psd_path),
+                    "editor_path": str(editor_path) if editor_path else None,
+                    "import_via_launch_argument": False,
+                    "profile": profile,
+                    "fallback_reason": "launch_argument_import_failed",
+                },
+                success_details="Executed built-in controller import fallback workflow.",
+                recorded_details="Recorded a built-in controller import fallback script.",
+                post_success_check=lambda: self._await_window_title_fragment(
+                    output_dir=output_dir,
+                    profile=profile,
+                    fragment=psd_path.stem,
+                    stem="native_gui_builtin_import_fallback_title_check",
+                ),
+                capture_on_success=True,
+            )
+            return {
+                **fallback_result,
+                "fallback_from_launch_argument": True,
+                "launch_argument_attempt": result,
+            }
+        return result
 
     def execute_apply_template(
         self,
@@ -193,9 +234,7 @@ class NativeWindowsGUIController:
                 "stderr": f"Timed out after {exc.timeout} seconds.",
                 "timed_out": True,
             }
-        artifact_path.write_text(
-            json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8"
-        )
+        artifact_path.write_text(_artifact_json(payload), encoding="utf-8")
         return {
             "status": "success" if payload.get("returncode") == 0 else "error",
             "artifact_path": str(artifact_path),
@@ -213,6 +252,15 @@ class NativeWindowsGUIController:
 
     def execute_export(self, controller: JsonDict, output_dir: Path, model_name: str) -> JsonDict:
         profile = dict(controller.get("profile") or {})
+        if controller.get("mode") == "execute" and not self._has_export_invocation(profile):
+            return {
+                "source_action": "export_embedded_data",
+                "status": "error",
+                "details": (
+                    "Export automation requires a configured export menu sequence "
+                    "or explicit export shortcut in the native GUI profile."
+                ),
+            }
         return self._execute_action(
             controller=controller,
             output_dir=output_dir,
@@ -251,14 +299,12 @@ class NativeWindowsGUIController:
         script_path.write_text(script, encoding="utf-8")
         if controller.get("mode") == "dry_run":
             artifact_path.write_text(
-                json.dumps(
+                _artifact_json(
                     {
                         "mode": "dry_run",
                         "script_path": str(script_path),
                         **dry_run_payload,
-                    },
-                    indent=2,
-                    ensure_ascii=False,
+                    }
                 ),
                 encoding="utf-8",
             )
@@ -351,12 +397,24 @@ class NativeWindowsGUIController:
             post_check = post_success_check()
             payload["post_success_check"] = post_check
             if post_check.get("status") != "success":
-                final_returncode = 2
-                payload["returncode"] = final_returncode
-                payload["stderr"] = str(
-                    post_check.get("details", "Post-success validation failed.")
-                )
-                final_stderr = payload["stderr"]
+                if len(attempts) <= retry_attempts:
+                    recovery = self._run_retry_recovery(
+                        source_action,
+                        output_dir,
+                        profile,
+                        len(attempts),
+                    )
+                    payload["post_success_recovery"] = recovery
+                    if self._can_retry_after_recovery(recovery):
+                        post_check = post_success_check()
+                        payload["post_success_check"] = post_check
+                if post_check.get("status") != "success":
+                    final_returncode = 2
+                    payload["returncode"] = final_returncode
+                    payload["stderr"] = str(
+                        post_check.get("details", "Post-success validation failed.")
+                    )
+                    final_stderr = payload["stderr"]
         if final_returncode == 0 and capture_on_success:
             payload["post_action_probe"] = self._capture_post_action_probe(
                 source_action=source_action,
@@ -374,10 +432,7 @@ class NativeWindowsGUIController:
                 output_dir=output_dir,
                 profile=profile,
             )
-        artifact_path.write_text(
-            json.dumps(payload, indent=2, ensure_ascii=False),
-            encoding="utf-8",
-        )
+        artifact_path.write_text(_artifact_json(payload), encoding="utf-8")
         return {
             "source_action": source_action,
             "status": "success" if final_returncode == 0 else "error",
@@ -441,9 +496,7 @@ class NativeWindowsGUIController:
             {"status": "ready", "mode": "execute", "profile": profile}, output_dir
         )
         recovery["probe"] = probe
-        artifact_path.write_text(
-            json.dumps(recovery, indent=2, ensure_ascii=False), encoding="utf-8"
-        )
+        artifact_path.write_text(_artifact_json(recovery), encoding="utf-8")
         return recovery
 
     def _retry_recovery_script(self, source_action: str, profile: JsonDict) -> str:
@@ -575,10 +628,7 @@ class NativeWindowsGUIController:
             "stdout": completed.stdout.strip(),
             "stderr": completed.stderr.strip(),
         }
-        artifact_path.write_text(
-            json.dumps(payload, indent=2, ensure_ascii=False),
-            encoding="utf-8",
-        )
+        artifact_path.write_text(_artifact_json(payload), encoding="utf-8")
         return {
             "status": "success" if completed.returncode == 0 else "error",
             "artifact_path": str(artifact_path),
@@ -620,10 +670,7 @@ class NativeWindowsGUIController:
             "stdout": completed.stdout.strip(),
             "stderr": completed.stderr.strip(),
         }
-        artifact_path.write_text(
-            json.dumps(payload, indent=2, ensure_ascii=False),
-            encoding="utf-8",
-        )
+        artifact_path.write_text(_artifact_json(payload), encoding="utf-8")
         return {
             "status": "success" if completed.returncode == 0 else "error",
             "artifact_path": str(artifact_path),
@@ -660,10 +707,7 @@ class NativeWindowsGUIController:
                 "stderr": f"Timed out after {exc.timeout} seconds.",
                 "timed_out": True,
             }
-        artifact_path.write_text(
-            json.dumps(payload, indent=2, ensure_ascii=False),
-            encoding="utf-8",
-        )
+        artifact_path.write_text(_artifact_json(payload), encoding="utf-8")
         return {
             "status": "success" if payload.get("returncode") == 0 else "error",
             "artifact_path": str(artifact_path),
@@ -752,10 +796,7 @@ class NativeWindowsGUIController:
                     "stderr": f"Timed out after {exc.timeout} seconds.",
                     "timed_out": True,
                 }
-            artifact_path.write_text(
-                json.dumps(payload, indent=2, ensure_ascii=False),
-                encoding="utf-8",
-            )
+            artifact_path.write_text(_artifact_json(payload), encoding="utf-8")
             matched_titles = []
             for entry in payload.get("all_diagnostics", []):
                 if not isinstance(entry, dict):
@@ -833,16 +874,28 @@ class NativeWindowsGUIController:
 
     def _has_apply_template_invocation(self, profile: JsonDict) -> bool:
         shortcut = str(profile.get("template_shortcut", "")).strip()
-        menu_sequence = profile.get("template_menu_sequence", [])
-        return bool(shortcut or (isinstance(menu_sequence, list) and menu_sequence))
+        menu_sequence = self._executable_menu_sequence(profile.get("template_menu_sequence", []))
+        return bool(shortcut or menu_sequence)
+
+    def _has_export_invocation(self, profile: JsonDict) -> bool:
+        shortcut = str(profile.get("export_shortcut", "")).strip()
+        menu_sequence = self._executable_menu_sequence(profile.get("export_menu_sequence", []))
+        return bool(shortcut or menu_sequence)
+
+    def _executable_menu_sequence(self, raw_sequence: object) -> list[JsonDict]:
+        if not isinstance(raw_sequence, list):
+            return []
+        return [
+            entry
+            for entry in raw_sequence
+            if isinstance(entry, dict) and str(entry.get("keys", "")).strip()
+        ]
 
     def _apply_template_script(self, template_id: str, profile: JsonDict) -> str:
         fragments = self._activation_fragments(profile)
         fragment_json = json.dumps(fragments, ensure_ascii=False).replace('"', '`"')
         shortcut = str(profile.get("template_shortcut", "")).strip()
-        menu_sequence = [
-            entry for entry in profile.get("template_menu_sequence", []) if isinstance(entry, dict)
-        ]
+        menu_sequence = self._executable_menu_sequence(profile.get("template_menu_sequence", []))
         activation_ms = int(float(profile.get("activation_wait_seconds", 1.0)) * 1000)
         dialog_ms = int(float(profile.get("template_dialog_wait_seconds", 0.8)) * 1000)
         escaped_template = template_id.replace("{", "{{").replace("}", "}}")
@@ -873,30 +926,43 @@ class NativeWindowsGUIController:
     def _export_script(self, output_dir: Path, model_name: str, profile: JsonDict) -> str:
         fragments = self._activation_fragments(profile)
         fragment_json = json.dumps(fragments, ensure_ascii=False).replace('"', '`"')
-        shortcut = str(profile.get("export_shortcut", "^+e"))
+        shortcut = str(profile.get("export_shortcut", "^+e")).strip()
+        menu_sequence = self._executable_menu_sequence(profile.get("export_menu_sequence", []))
         activation_ms = int(float(profile.get("activation_wait_seconds", 1.0)) * 1000)
         dialog_ms = int(float(profile.get("export_dialog_wait_seconds", 1.0)) * 1000)
         escaped_output = str(output_dir).replace("{", "{{").replace("}", "}}")
         escaped_name = model_name.replace("{", "{{").replace("}", "}}")
-        script = (
-            '$ErrorActionPreference = "Stop"\n'
-            + self._window_activation_helper_script(profile)
-            + f'$activationFragments = ConvertFrom-Json "{fragment_json}"\n'
-            "$windowState = Activate-ControllerWindow -Fragments $activationFragments\n"
-            "$wshell = New-Object -ComObject WScript.Shell\n"
-            'if (-not $windowState.Activated) { throw "Cubism window not found." }\n'
-            f"Start-Sleep -Milliseconds {activation_ms}\n"
-            f'$wshell.SendKeys("{shortcut}")\n'
-            f"Start-Sleep -Milliseconds {dialog_ms}\n"
-            f'$wshell.SendKeys("{escaped_output}")\n'
-            "Start-Sleep -Milliseconds 200\n"
-            '$wshell.SendKeys("~")\n'
-            f"Start-Sleep -Milliseconds {dialog_ms}\n"
-            f'$wshell.SendKeys("{escaped_name}")\n'
-            "Start-Sleep -Milliseconds 200\n"
-            '$wshell.SendKeys("~")\n'
-        )
-        return script + self._dialog_sequence_script("export_embedded_data", profile)
+        lines = ['$ErrorActionPreference = "Stop"\n']
+        lines.append(self._window_activation_helper_script(profile))
+        lines.append(f'$activationFragments = ConvertFrom-Json "{fragment_json}"\n')
+        lines.append("$windowState = Activate-ControllerWindow -Fragments $activationFragments\n")
+        lines.append("$wshell = New-Object -ComObject WScript.Shell\n")
+        lines.append('if (-not $windowState.Activated) { throw "Cubism window not found." }\n')
+        lines.append(f"Start-Sleep -Milliseconds {activation_ms}\n")
+        if menu_sequence:
+            for entry in menu_sequence:
+                keys = str(entry.get("keys", "")).strip()
+                if not keys:
+                    continue
+                wait_ms = int(float(entry.get("wait_seconds", 0.25)) * 1000)
+                escaped_keys = self._escape_send_keys(keys)
+                lines.append(f'$wshell.SendKeys("{escaped_keys}")\n')
+                lines.append(f"Start-Sleep -Milliseconds {wait_ms}\n")
+        else:
+            lines.append(f'$wshell.SendKeys("{shortcut}")\n')
+            lines.append(f"Start-Sleep -Milliseconds {dialog_ms}\n")
+        dialog_sequence = self._dialog_sequence_script("export_embedded_data", profile)
+        if dialog_sequence:
+            lines.append(dialog_sequence)
+        lines.append(f'$wshell.SendKeys("{escaped_output}")\n')
+        lines.append("Start-Sleep -Milliseconds 200\n")
+        lines.append('$wshell.SendKeys("~")\n')
+        lines.append(f"Start-Sleep -Milliseconds {dialog_ms}\n")
+        lines.append(f'$wshell.SendKeys("{escaped_name}")\n')
+        lines.append("Start-Sleep -Milliseconds 200\n")
+        lines.append('$wshell.SendKeys("~")\n')
+        script = "".join(lines)
+        return script
 
     def _import_script(self, psd_path: Path, profile: JsonDict) -> str:
         fragments = self._activation_fragments(profile)
@@ -1064,6 +1130,12 @@ class NativeWindowsGUIController:
             "            -PreferredTitle $preferredTitle\n"
             "        if ($null -ne $target) {\n"
             "            $activated = $wshell.AppActivate([int]$target.ProcessId)\n"
+            "            if (-not $activated -and $target.Title) {\n"
+            "                $activated = $wshell.AppActivate([string]$target.Title)\n"
+            "            }\n"
+            "            if (-not $activated -and $preferredTitle) {\n"
+            "                $activated = $wshell.AppActivate([string]$preferredTitle)\n"
+            "            }\n"
             "            if ($activated) { break }\n"
             "        }\n"
             "        Start-Sleep -Milliseconds $pollInterval\n"

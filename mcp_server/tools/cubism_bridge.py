@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
-import json
 import os
 from pathlib import Path
 from typing import Any
+
+from mcp_server.artifacts import ArtifactStore
 
 JsonDict = dict[str, Any]
 
@@ -99,9 +100,6 @@ class CubismBridge:
         }
 
     def write_plan(self, plan: JsonDict, output_dir: str, model_name: str) -> str:
-        output_path = Path(output_dir)
-        output_path.mkdir(parents=True, exist_ok=True)
-        plan_path = output_path / f"{model_name}_cubism_automation_plan.json"
-        with open(plan_path, "w", encoding="utf-8") as handle:
-            json.dump(plan, handle, indent=2, ensure_ascii=False)
+        artifact_store = ArtifactStore(output_dir)
+        plan_path = artifact_store.write_json(f"{model_name}_cubism_automation_plan.json", plan)
         return str(plan_path)

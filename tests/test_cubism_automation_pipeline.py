@@ -1368,6 +1368,58 @@ def test_native_gui_controller_embeds_known_dialog_sequences(tmp_path: Path) -> 
     assert '$wshell.SendKeys("%y")' in template_script
     assert "Start-Sleep -Milliseconds 300" in export_script
     assert '$wshell.SendKeys("{TAB}{ENTER}")' in export_script
+    assert export_script.index('$wshell.SendKeys("{TAB}{ENTER}")') < export_script.index(
+        '$wshell.SendKeys("DialogCase")'
+    )
+
+
+def test_native_gui_controller_uses_export_menu_sequence_when_configured(tmp_path: Path) -> None:
+    controller = NativeWindowsGUIController()
+    output_dir = tmp_path / "controller_export_menu_sequence"
+    controller_state = {
+        "status": "ready",
+        "mode": "dry_run",
+        "profile": {
+            "window_title_contains": "Cubism Editor",
+            "activation_wait_seconds": 0.0,
+            "export_dialog_wait_seconds": 0.0,
+            "export_menu_sequence": [
+                {"keys": "%f", "wait_seconds": 0.1},
+                {"keys": "e", "wait_seconds": 0.2},
+                {"keys": "m", "wait_seconds": 0.3},
+            ],
+        },
+    }
+
+    controller.execute_export(controller_state, output_dir, "MenuExport")
+
+    export_script = (output_dir / "native_gui_builtin_export.ps1").read_text(encoding="utf-8")
+    assert '$wshell.SendKeys("%f")' in export_script
+    assert '$wshell.SendKeys("e")' in export_script
+    assert '$wshell.SendKeys("m")' in export_script
+    assert '$wshell.SendKeys("^+e")' not in export_script
+
+
+def test_native_gui_controller_rejects_non_executable_export_menu_sequence(tmp_path: Path) -> None:
+    controller = NativeWindowsGUIController()
+    output_dir = tmp_path / "controller_export_menu_sequence_invalid"
+    controller_state = {
+        "status": "ready",
+        "mode": "execute",
+        "profile": {
+            "window_title_contains": "Cubism Editor",
+            "activation_wait_seconds": 0.0,
+            "export_dialog_wait_seconds": 0.0,
+            "export_shortcut": "",
+            "export_menu_sequence": [{"wait_seconds": 0.2}],
+        },
+    }
+
+    result = controller.execute_export(controller_state, output_dir, "MenuExport")
+
+    assert result["status"] == "error"
+    assert "configured export menu sequence" in str(result["details"]).lower()
+    assert not (output_dir / "native_gui_builtin_export.ps1").exists()
 
 
 def test_native_gui_controller_retries_until_success(
@@ -1681,6 +1733,7 @@ def test_native_gui_controller_marks_export_missing_outputs_as_error(
         "profile": {
             "window_title_contains": "Cubism Editor",
             "import_shortcut": "^o",
+            "export_shortcut": "^+e",
             "activation_wait_seconds": 0.0,
             "export_dialog_wait_seconds": 0.0,
             "export_output_timeout_seconds": 0.0,
@@ -2411,6 +2464,8 @@ def test_native_gui_controller_recovery_script_targets_known_dialogs(
     assert "function Invoke-DialogRecovery" in script_text
     assert 'TitleFragment "Import PSD"' in script_text
     assert "$wshell.AppActivate($process.Id)" in script_text
+    assert "$wshell.AppActivate([string]$target.Title)" in script_text
+    assert "$wshell.AppActivate([string]$preferredTitle)" in script_text
     assert 'Invoke-DialogRecovery -TitleFragment "Import PSD" -Keys "%y"' in script_text
     assert "function Activate-ControllerWindow" in script_text
     assert "$windowState = Activate-ControllerWindow -Fragments $activationFragments" in script_text
@@ -2475,6 +2530,192 @@ def test_native_gui_controller_prefers_action_specific_dialog_recovery(
     )
 
 
+def test_native_gui_controller_runs_recovery_after_post_success_check_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    controller = NativeWindowsGUIController()
+    output_dir = tmp_path / "controller_post_success_recovery"
+    psd_path = tmp_path / "ATRI.psd"
+    psd_path.write_bytes(b"psd")
+    editor_path = tmp_path / "CubismEditor5.exe"
+    editor_path.write_bytes(b"exe")
+    controller_state = {
+        "status": "ready",
+        "mode": "execute",
+        "profile": {
+            "window_title_contains": "Cubism Editor",
+            "import_shortcut": "^o",
+            "import_via_launch_argument": True,
+            "import_launch_argument_fallback": False,
+            "activation_wait_seconds": 0.0,
+            "dialog_wait_seconds": 0.0,
+            "retry_attempts": 1,
+            "retry_backoff_seconds": 0.0,
+            "retry_recovery_sequences": {"default": [{"keys": "{ESC}", "wait_seconds": 0.0}]},
+            "known_dialog_recovery": {
+                "import_psd": [{"title_contains": "Start", "keys": "{ESC}", "wait_seconds": 0.0}]
+            },
+            "window_probe_candidates": ["Start"],
+            "capture_screenshot_on_error": False,
+        },
+    }
+
+    calls: list[str] = []
+    title_checks = {"count": 0}
+
+    def fake_run(script_path: Path) -> subprocess.CompletedProcess[str]:
+        calls.append(script_path.name)
+        if script_path.name == "native_gui_builtin_import.ps1":
+            return subprocess.CompletedProcess([str(script_path)], 0, "", "")
+        if script_path.name == "native_gui_builtin_import_psd_retry_recovery_attempt_1.ps1":
+            return subprocess.CompletedProcess([str(script_path)], 0, "recovered", "")
+        if script_path.name == "native_gui_builtin_window_probe.ps1":
+            return subprocess.CompletedProcess(
+                [str(script_path)],
+                0,
+                json.dumps(
+                    {
+                        "target": "Cubism Editor",
+                        "matched_titles": ["Live2D Cubism Editor 5.3.01    [ Unregistered ]  - "],
+                        "diagnostics": [
+                            {
+                                "ProcessId": 1,
+                                "ProcessName": "java",
+                                "Title": "Live2D Cubism Editor 5.3.01    [ Unregistered ]  - ",
+                            }
+                        ],
+                        "all_titles": [
+                            "Live2D Cubism Editor 5.3.01    [ Unregistered ]  - ",
+                            "Start",
+                        ],
+                        "all_diagnostics": [
+                            {
+                                "ProcessId": 1,
+                                "ProcessName": "java",
+                                "Title": "Live2D Cubism Editor 5.3.01    [ Unregistered ]  - ",
+                            },
+                            {
+                                "ProcessId": 2,
+                                "ProcessName": "java",
+                                "Title": "Start",
+                            },
+                        ],
+                    }
+                ),
+                "",
+            )
+        return subprocess.CompletedProcess([str(script_path)], 0, "ok", "")
+
+    monkeypatch.setattr(controller, "_run_powershell", fake_run)
+
+    def fake_title_check(*args: object, **kwargs: object) -> dict[str, object]:
+        title_checks["count"] += 1
+        if title_checks["count"] == 1:
+            return {
+                "status": "error",
+                "details": "Did not observe a Cubism window containing 'ATRI' after import.",
+                "artifact_path": str(output_dir / "native_gui_builtin_import_psd_title_check.json"),
+                "observed_titles": [
+                    "Live2D Cubism Editor 5.3.01    [ Unregistered ]  - ",
+                    "Start",
+                ],
+            }
+        return {
+            "status": "success",
+            "details": "Detected a Cubism window containing 'ATRI' after import.",
+            "artifact_path": str(output_dir / "native_gui_builtin_import_psd_title_check.json"),
+            "matched_titles": ["Live2D Cubism Editor 5.3.01    [ Unregistered ]  - ATRI"],
+        }
+
+    monkeypatch.setattr(controller, "_await_window_title_fragment", fake_title_check)
+
+    result = controller.execute_import(
+        controller_state,
+        psd_path,
+        output_dir,
+        editor_path=editor_path,
+    )
+
+    assert result["status"] == "success"
+    payload = json.loads(
+        (output_dir / "native_gui_builtin_import_result.json").read_text(encoding="utf-8")
+    )
+    assert payload["post_success_check"]["status"] == "success"
+    assert "native_gui_builtin_import_psd_retry_recovery_attempt_1.ps1" in calls
+    assert title_checks["count"] == 2
+
+
+def test_native_gui_controller_falls_back_to_dialog_import_after_launch_argument_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    controller = NativeWindowsGUIController()
+    output_dir = tmp_path / "controller_import_launch_fallback"
+    psd_path = tmp_path / "ATRI.psd"
+    psd_path.write_bytes(b"psd")
+    editor_path = tmp_path / "CubismEditor5.exe"
+    editor_path.write_bytes(b"exe")
+    controller_state = {
+        "status": "ready",
+        "mode": "execute",
+        "profile": {
+            "window_title_contains": "Cubism Editor",
+            "import_shortcut": "^o",
+            "import_via_launch_argument": True,
+            "import_launch_argument_fallback": True,
+            "activation_wait_seconds": 0.0,
+            "dialog_wait_seconds": 0.0,
+            "retry_attempts": 0,
+            "retry_backoff_seconds": 0.0,
+            "known_dialog_recovery": {"import_psd": []},
+            "capture_screenshot_on_error": False,
+        },
+    }
+
+    calls: list[str] = []
+
+    def fake_run(script_path: Path) -> subprocess.CompletedProcess[str]:
+        calls.append(script_path.name)
+        return subprocess.CompletedProcess([str(script_path)], 0, "", "")
+
+    title_checks = {"count": 0}
+
+    def fake_title_check(*args: object, **kwargs: object) -> dict[str, object]:
+        title_checks["count"] += 1
+        stem = str(kwargs.get("stem"))
+        if stem == "native_gui_builtin_import_psd_title_check":
+            return {
+                "status": "error",
+                "details": "Did not observe a Cubism window containing 'ATRI' after import.",
+                "artifact_path": str(output_dir / "native_gui_builtin_import_psd_title_check.json"),
+                "observed_titles": ["Live2D Cubism Editor 5.3.01    [ FREE version ]  - "],
+            }
+        return {
+            "status": "success",
+            "details": "Detected a Cubism window containing 'ATRI' after import.",
+            "artifact_path": str(
+                output_dir / "native_gui_builtin_import_fallback_title_check.json"
+            ),
+            "matched_titles": ["Live2D Cubism Editor 5.3.01    [ FREE version ]  - ATRI"],
+        }
+
+    monkeypatch.setattr(controller, "_run_powershell", fake_run)
+    monkeypatch.setattr(controller, "_await_window_title_fragment", fake_title_check)
+
+    result = controller.execute_import(
+        controller_state,
+        psd_path,
+        output_dir,
+        editor_path=editor_path,
+    )
+
+    assert result["status"] == "success"
+    assert result["fallback_from_launch_argument"] is True
+    assert result["launch_argument_attempt"]["status"] == "error"
+    assert "native_gui_builtin_import.ps1" in calls
+    assert "native_gui_builtin_import_fallback.ps1" in calls
+    assert title_checks["count"] == 2
+
+
 def test_default_windows_profile_contains_seed_dialog_recovery_rules() -> None:
     profile = json.loads(
         (
@@ -2489,7 +2730,9 @@ def test_default_windows_profile_contains_seed_dialog_recovery_rules() -> None:
     assert known_dialog_recovery["import_psd"]
     assert known_dialog_recovery["apply_template"]
     assert known_dialog_recovery["export_embedded_data"]
-    assert known_dialog_recovery["import_psd"][0]["title_contains"] == "Open"
+    assert known_dialog_recovery["import_psd"][0]["title_contains"] == "Start"
+    assert known_dialog_recovery["import_psd"][1]["title_contains"] == "Open"
+    assert "Start" in profile["window_probe_candidates"]
     assert "Import PSD" in profile["window_probe_candidates"]
 
 
@@ -2766,3 +3009,47 @@ def test_profile_calibration_report_ignores_unusable_apply_template_sequence() -
     ]
     assert "Modeling" in diagnostics["documentation_hint"]
     assert any("template_menu_sequence" in suggestion for suggestion in report["suggestions"])
+
+
+def test_profile_calibration_report_surfaces_missing_export_invocation() -> None:
+    manager = CubismAutomationManager()
+    bundle = {
+        "backend": "native_gui",
+        "model_name": "ExportDiag",
+        "native_controller": {
+            "profile": {
+                "window_title_contains": "Cubism Editor",
+                "window_probe_candidates": ["Cubism Editor"],
+                "known_dialog_recovery": {},
+                "export_shortcut": "",
+                "export_menu_sequence": [],
+            }
+        },
+    }
+    execution = {
+        "resume": {"window_probe": None},
+        "executed_steps": [
+            {
+                "source_action": "export_embedded_data",
+                "status": "error",
+                "details": (
+                    "Export automation requires a configured export menu sequence "
+                    "or explicit export shortcut in the native GUI profile."
+                ),
+            }
+        ],
+    }
+
+    report = manager.build_profile_calibration_report(bundle, execution)
+
+    diagnostics = report["action_diagnostics"]["export_embedded_data"]
+    assert diagnostics["status"] == "error"
+    assert diagnostics["export_embedded_data_ready"] is False
+    assert diagnostics["export_menu_sequence_configured"] is False
+    assert diagnostics["recommended_menu_path"] == [
+        "File",
+        "Export Embedded File",
+        "Export as MOC3 file",
+    ]
+    assert "Export Embedded File" in diagnostics["documentation_hint"]
+    assert any("export_menu_sequence" in suggestion for suggestion in report["suggestions"])

@@ -176,6 +176,7 @@ def test_cli_calibrate_template_with_demo_adapter_full(tmp_path: Path) -> None:
     report_path = Path(payload["report_path"])
     report = json.loads(report_path.read_text(encoding="utf-8"))
     assert report["status"] == "success"
+    assert Path(report["psd_path"]).is_absolute()
     assert report["steps"]["prepare_cubism_automation"]["status"] == "ready"
     assert report["steps"]["execute_cubism_dispatch"]["status"] == "success"
     assert (output_dir / "CalibrateFull_cubism_automation_plan.json").exists()
@@ -183,6 +184,10 @@ def test_cli_calibrate_template_with_demo_adapter_full(tmp_path: Path) -> None:
     assert (output_dir / "CalibrateFull_cubism_dispatch_execution.json").exists()
     assert (output_dir / "CalibrateFull_cubism_profile_calibration.json").exists()
     assert (output_dir / "CalibrateFull.moc3").exists()
+    plan = json.loads(
+        (output_dir / "CalibrateFull_cubism_automation_plan.json").read_text(encoding="utf-8")
+    )
+    assert Path(plan["steps"][1]["psd_path"]).is_absolute()
 
 
 def test_cli_calibrate_template_with_builtin_controller_dry_run_infers_psd_path(
