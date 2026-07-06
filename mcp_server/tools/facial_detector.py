@@ -115,10 +115,14 @@ class FacialFeatureDetector:
             cv_data = getattr(cv2, "data", None)
             if cv_data is None:
                 raise RuntimeError("OpenCV haarcascade data directory is unavailable")
-            face_cascade = cv2.CascadeClassifier(
+            # 某些 OpenCV 类型桩不暴露 CascadeClassifier，这里改为运行时获取。
+            cascade_classifier = getattr(cv2, "CascadeClassifier", None)
+            if cascade_classifier is None:
+                raise RuntimeError("OpenCV CascadeClassifier is unavailable")
+            face_cascade = cascade_classifier(
                 cv_data.haarcascades + "haarcascade_frontalface_default.xml"
             )
-            eye_cascade = cv2.CascadeClassifier(cv_data.haarcascades + "haarcascade_eye.xml")
+            eye_cascade = cascade_classifier(cv_data.haarcascades + "haarcascade_eye.xml")
             if face_cascade.empty() or eye_cascade.empty():
                 raise RuntimeError("OpenCV cascade files could not be loaded")
             self.face_cascade = face_cascade
