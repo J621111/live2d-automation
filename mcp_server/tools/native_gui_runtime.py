@@ -2,8 +2,9 @@ from __future__ import annotations
 
 import subprocess
 import time
+from collections.abc import Callable
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
 from mcp_server.tools import native_gui_scripts
 
@@ -74,11 +75,7 @@ def probe_window(
         "timed_out": payload.get("timed_out", False),
         **({"diagnostics": payload["diagnostics"]} if "diagnostics" in payload else {}),
         **({"all_titles": payload["all_titles"]} if "all_titles" in payload else {}),
-        **(
-            {"all_diagnostics": payload["all_diagnostics"]}
-            if "all_diagnostics" in payload
-            else {}
-        ),
+        **({"all_diagnostics": payload["all_diagnostics"]} if "all_diagnostics" in payload else {}),
     }
 
 

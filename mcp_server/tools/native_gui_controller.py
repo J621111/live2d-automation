@@ -8,8 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from mcp_server.artifacts import redact_sensitive
-from mcp_server.tools import native_gui_runtime
-from mcp_server.tools import native_gui_scripts
+from mcp_server.tools import native_gui_runtime, native_gui_scripts
 
 JsonDict = dict[str, Any]
 _CONTROLLER_TIMEOUT_SECONDS = 10
@@ -189,7 +188,9 @@ class NativeWindowsGUIController:
         output_dir: Path,
     ) -> JsonDict:
         profile = dict(controller.get("profile") or {})
-        if controller.get("mode") == "execute" and not native_gui_scripts.has_apply_template_invocation(profile):
+        if controller.get(
+            "mode"
+        ) == "execute" and not native_gui_scripts.has_apply_template_invocation(profile):
             return {
                 "source_action": "apply_template",
                 "status": "error",
@@ -223,7 +224,9 @@ class NativeWindowsGUIController:
 
     def execute_export(self, controller: JsonDict, output_dir: Path, model_name: str) -> JsonDict:
         profile = dict(controller.get("profile") or {})
-        if controller.get("mode") == "execute" and not native_gui_scripts.has_export_invocation(profile):
+        if controller.get("mode") == "execute" and not native_gui_scripts.has_export_invocation(
+            profile
+        ):
             return {
                 "source_action": "export_embedded_data",
                 "status": "error",
