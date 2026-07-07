@@ -7,6 +7,7 @@ import re
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
+DEFAULT_INPUT_ROOT = PROJECT_ROOT.resolve()
 DEFAULT_OUTPUT_ROOT = (PROJECT_ROOT / "output").resolve()
 MODEL_NAME_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
 
@@ -25,6 +26,23 @@ def _configured_output_root() -> Path:
     return resolved
 
 
+def _configured_input_root() -> Path:
+    override = os.getenv("LIVE2D_INPUT_ROOT")
+    if not override:
+        return DEFAULT_INPUT_ROOT
+    resolved = Path(override).expanduser().resolve()
+    if not is_relative_to(resolved, PROJECT_ROOT):
+        raise InputValidationError("LIVE2D_INPUT_ROOT must stay inside the project directory.")
+    return resolved
+
+
+def _unsafe_image_paths_allowed() -> bool:
+    raw = os.getenv("LIVE2D_TRUST_LOCAL_IMAGE_PATHS")
+    if raw is None:
+        return False
+    return raw.strip().lower() in {"1", "true", "yes", "on"}
+
+
 def is_relative_to(path: Path, root: Path) -> bool:
     try:
         path.resolve().relative_to(root.resolve())
@@ -34,6 +52,23 @@ def is_relative_to(path: Path, root: Path) -> bool:
 
 
 OUTPUT_ROOT = _configured_output_root()
+
+
+def resolve_input_image_path(image_path: str | os.PathLike[str]) -> Path:
+    """Resolve a user input image path under the configured input root."""
+
+    image_text = str(image_path).strip()
+    if not image_text:
+        raise InputValidationError("image_path is required.")
+
+    normalized_image_path = image_text.replace("\\", "/")
+    raw_path = Path(normalized_image_path)
+    input_root = _configured_input_root()
+    resolved = raw_path.resolve() if raw_path.is_absolute() else (input_root / raw_path).resolve()
+
+    if not _unsafe_image_paths_allowed() and not is_relative_to(resolved, input_root):
+        raise InputValidationError("image_path must stay inside the configured project input root.")
+    return resolved
 
 
 def resolve_output_dir(output_dir: str | os.PathLike[str]) -> Path:

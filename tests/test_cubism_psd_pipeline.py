@@ -214,6 +214,7 @@ async def test_build_cubism_psd_includes_finer_eye_parts_from_api_layers(
     monkeypatch.setenv("LIVE2D_PART_BACKEND", "api")
     monkeypatch.setenv("LIVE2D_PART_API_URL", "https://example.invalid/parts")
     monkeypatch.setenv("LIVE2D_PART_API_ALLOW_UPLOAD", "1")
+    monkeypatch.setenv("LIVE2D_PART_API_ALLOWED_HOSTS", "example.invalid")
     monkeypatch.setattr(APIPartDetectionBackend, "_default_transport", fake_transport)
 
     analyze_result = await analyze_photo(str(sample_image_path))
