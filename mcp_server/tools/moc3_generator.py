@@ -173,6 +173,25 @@ class Live2DExporter:
             errors.append("model3.json export failed")
             model3_data = {"FileReferences": {}}
 
+        try:
+            metadata_path = output_path / "export_metadata.json"
+            temp_metadata = output_path / "export_metadata_temp.json"
+            export_metadata = {
+                "schema_version": 1,
+                "artifact_stage": "mock-intermediate",
+                "direct_viewer_compatible": False,
+                "ready_for_cubism_editor": False,
+            }
+            with open(temp_metadata, "w", encoding="utf-8") as handle:
+                json.dump(export_metadata, handle, indent=2)
+            if metadata_path.exists():
+                metadata_path.unlink()
+            temp_metadata.rename(metadata_path)
+            files["export_metadata.json"] = str(metadata_path)
+        except Exception as exc:
+            logger.error(f"Failed to export readiness metadata: {exc}")
+            errors.append("export readiness metadata failed")
+
         moc3_success = self.moc3_gen.generate(
             model_name,
             state.get("layers", []),
