@@ -77,7 +77,6 @@ extend-exclude = '''
   | ^/\.pytest_tmp(?:/|$)
   | ^/\.pytest_tmp_workspace(?:/|$)
   | ^/pytest-cache-files-.*
-  | ^/test_(live2d_pipeline|optimized|simple)\.py$
 )
 '''
 
@@ -87,9 +86,6 @@ extend-exclude = [
     "output",
     ".pytest_tmp_workspace",
     "pytest-cache-files-*",
-    "test_live2d_pipeline.py",
-    "test_optimized.py",
-    "test_simple.py",
 ]
 
 [tool.ruff.lint]
@@ -112,4 +108,4 @@ warn_return_any = true
 warn_unused_configs = true
 ignore_missing_imports = true
 follow_imports = "skip"
-exclude = '(?x)(^output(?:[\\/]|$)|^\.pytest_tmp(?:[\\/]|$)|^\.pytest_tmp_workspace(?:[\\/]|$)|^pytest-cache-files-.*|^test_(live2d_pipeline|optimized|simple)\.py$)'
+exclude = '(?x)(^output(?:[\\/]|$)|^\.pytest_tmp(?:[\\/]|$)|^\.pytest_tmp_workspace(?:[\\/]|$)|^pytest-cache-files-.*)'

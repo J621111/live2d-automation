@@ -36,14 +36,6 @@ Primary automated coverage lives in the `tests/` package.
 python -m pytest -q
 ```
 
-Legacy script-style validation is still available for manual checks:
-
-```bash
-python test_simple.py
-python test_live2d_pipeline.py
-python test_optimized.py
-```
-
 ## Runtime Notes
 
 - MCP entrypoint: `python -m mcp_server.server`
