@@ -1178,7 +1178,7 @@ async def test_prepare_cubism_automation_rejects_missing_psd_package(
 
 
 @pytest.mark.asyncio
-async def test_validate_cubism_export_accepts_mock_export_bundle(
+async def test_validate_cubism_export_reports_mock_bundle_as_partial(
     sample_image_path: Path,
     tmp_path: Path,
 ) -> None:
@@ -1201,9 +1201,12 @@ async def test_validate_cubism_export_accepts_mock_export_bundle(
             str(tmp_path / "mock_export"),
             model_name="Stage3Export",
         )
-        assert validate_result["status"] == "success"
+        assert validate_result["status"] == "partial"
         assert validate_result["missing"] == []
         assert validate_result["errors"] == []
+        assert validate_result["checks"]["structure_valid"] is True
+        assert validate_result["checks"]["artifact_stage"] == "mock-intermediate"
+        assert validate_result["checks"]["ready_for_cubism_editor"] is False
         assert validate_result["checks"]["moc_reference"] == "Stage3Export.moc3"
         assert validate_result["checks"]["texture_count"] >= 1
     finally:
