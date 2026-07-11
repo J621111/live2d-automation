@@ -7,6 +7,7 @@ from PIL import Image, ImageDraw
 from mcp_server.artifacts import redact_command
 from mcp_server.secure_server_impl import (
     InputValidationError,
+    _resolve_image_path,
     _resolve_output_dir,
     analyze_photo,
     close_session,
@@ -224,6 +225,34 @@ async def test_analyze_photo_reports_fallback_reason(
 def test_output_dir_traversal_is_rejected(candidate: str) -> None:
     with pytest.raises(InputValidationError):
         _resolve_output_dir(candidate)
+
+
+def test_image_path_outside_project_root_is_rejected(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    input_root = tmp_path / "input_root"
+    outside_path = tmp_path / "outside_project_input.png"
+    input_root.mkdir(parents=True, exist_ok=True)
+    Image.new("RGBA", (32, 32), (255, 0, 0, 255)).save(outside_path, format="PNG")
+    monkeypatch.setenv("LIVE2D_INPUT_ROOT", str(input_root))
+
+    with pytest.raises(InputValidationError, match="configured project input root"):
+        _resolve_image_path(str(outside_path))
+
+
+def test_image_path_outside_project_root_allows_trusted_local_override(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    input_root = tmp_path / "input_root"
+    outside_path = tmp_path / "outside_project_input_override.png"
+    input_root.mkdir(parents=True, exist_ok=True)
+    Image.new("RGBA", (32, 32), (0, 255, 0, 255)).save(outside_path, format="PNG")
+    monkeypatch.setenv("LIVE2D_INPUT_ROOT", str(input_root))
+    monkeypatch.setenv("LIVE2D_TRUST_LOCAL_IMAGE_PATHS", "1")
+
+    assert _resolve_image_path(str(outside_path)) == outside_path.resolve()
 
 
 @pytest.mark.asyncio

@@ -46,6 +46,9 @@ from mcp_server.validation import (
     is_relative_to as _shared_is_relative_to,
 )
 from mcp_server.validation import (
+    resolve_input_image_path as _shared_resolve_input_image_path,
+)
+from mcp_server.validation import (
     resolve_output_dir as _shared_resolve_output_dir,
 )
 from mcp_server.validation import (
@@ -279,10 +282,7 @@ def _build_error_payload(
 
 
 def _resolve_image_path(image_path: str) -> Path:
-    if not image_path or not image_path.strip():
-        raise InputValidationError("image_path is required.")
-    raw_path = Path(image_path)
-    resolved = raw_path.resolve() if raw_path.is_absolute() else (project_root / raw_path).resolve()
+    resolved = _shared_resolve_input_image_path(image_path)
     if not resolved.exists() or not resolved.is_file():
         raise InputValidationError("image_path does not point to an existing file.")
     if resolved.suffix.lower() not in ALLOWED_IMAGE_SUFFIXES:

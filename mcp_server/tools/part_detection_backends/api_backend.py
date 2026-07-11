@@ -76,7 +76,10 @@ class APIPartDetectionBackend(PartDetectionBackend):
         self.max_response_bytes = self._env_int("LIVE2D_PART_API_MAX_RESPONSE_BYTES", 512 * 1024)
 
     async def analyze(self, image_path: str) -> JsonDict:
-        fallback_result = await self.fallback_backend.analyze(image_path)
+        fallback_result_payload = await self.fallback_backend.analyze(image_path)
+        fallback_result: JsonDict = (
+            dict(fallback_result_payload) if isinstance(fallback_result_payload, dict) else {}
+        )
         if not self.api_url:
             fallback_result["backend_used"] = self.backend_name
             fallback_result["fallback_reason"] = self._merge_reasons(
@@ -210,9 +213,16 @@ class APIPartDetectionBackend(PartDetectionBackend):
 
     def _validate_api_host(self) -> str | None:
         api_url = self.api_url
-        if not api_url or api_url.startswith("inmemory://") or not self.allowed_hosts:
+        if not api_url or api_url.startswith("inmemory://"):
             return None
         parsed = urlparse(api_url)
+        if parsed.scheme != "https":
+            return "LIVE2D_PART_API_URL must use https for remote uploads."
+        if not self.allowed_hosts:
+            return (
+                "LIVE2D_PART_API_ALLOWED_HOSTS is required for remote uploads and must "
+                "include the configured LIVE2D_PART_API_URL host."
+            )
         host = (parsed.hostname or "").lower()
         if host not in self.allowed_hosts:
             allowed = ", ".join(sorted(self.allowed_hosts))
@@ -220,8 +230,6 @@ class APIPartDetectionBackend(PartDetectionBackend):
                 f"LIVE2D_PART_API_URL host '{host}' is not in "
                 f"LIVE2D_PART_API_ALLOWED_HOSTS ({allowed})."
             )
-        if parsed.scheme != "https":
-            return "LIVE2D_PART_API_URL must use https when host allowlisting is enabled."
         return None
 
     def _parse_remote_parts(self, response: JsonDict) -> list[DetectedPart]:

@@ -275,6 +275,49 @@ async def test_api_backend_requires_remote_upload_opt_in(sample_image_path: Path
 
 
 @pytest.mark.asyncio
+async def test_api_backend_requires_allowed_host_list(sample_image_path: Path) -> None:
+    called = False
+
+    def fake_transport(_url: str, _payload: JsonDict, _headers: JsonDict) -> JsonDict:
+        nonlocal called
+        called = True
+        return {"parts": []}
+
+    detector = APIPartDetectionBackend(
+        api_url="https://example.invalid/parts",
+        transport=fake_transport,
+        allow_remote_upload=True,
+    )
+    result = await detector.analyze(str(sample_image_path))
+
+    assert result["backend_used"] == "api"
+    assert called is False
+    assert "allowed_hosts is required" in str(result["fallback_reason"]).lower()
+
+
+@pytest.mark.asyncio
+async def test_api_backend_requires_https_for_remote_upload(sample_image_path: Path) -> None:
+    called = False
+
+    def fake_transport(_url: str, _payload: JsonDict, _headers: JsonDict) -> JsonDict:
+        nonlocal called
+        called = True
+        return {"parts": []}
+
+    detector = APIPartDetectionBackend(
+        api_url="http://example.invalid/parts",
+        transport=fake_transport,
+        allow_remote_upload=True,
+    )
+    detector.allowed_hosts = {"example.invalid"}
+    result = await detector.analyze(str(sample_image_path))
+
+    assert result["backend_used"] == "api"
+    assert called is False
+    assert "must use https" in str(result["fallback_reason"]).lower()
+
+
+@pytest.mark.asyncio
 async def test_mcp_pipeline_can_use_api_backend_via_environment(
     sample_image_path: Path,
     tmp_path: Path,
@@ -317,6 +360,7 @@ async def test_mcp_pipeline_can_use_api_backend_via_environment(
     monkeypatch.setenv("LIVE2D_PART_BACKEND", "api")
     monkeypatch.setenv("LIVE2D_PART_API_URL", "https://example.invalid/parts")
     monkeypatch.setenv("LIVE2D_PART_API_ALLOW_UPLOAD", "1")
+    monkeypatch.setenv("LIVE2D_PART_API_ALLOWED_HOSTS", "example.invalid")
     monkeypatch.setattr(APIPartDetectionBackend, "_default_transport", fake_transport)
 
     analyze_result = await analyze_parts_with_ai(str(sample_image_path))
@@ -418,6 +462,7 @@ async def test_generate_layers_can_use_api_backend_via_environment(
     monkeypatch.setenv("LIVE2D_PART_BACKEND", "api")
     monkeypatch.setenv("LIVE2D_PART_API_URL", "https://example.invalid/parts")
     monkeypatch.setenv("LIVE2D_PART_API_ALLOW_UPLOAD", "1")
+    monkeypatch.setenv("LIVE2D_PART_API_ALLOWED_HOSTS", "example.invalid")
     monkeypatch.setattr(APIPartDetectionBackend, "_default_transport", fake_transport)
 
     analyze_result = await analyze_photo(str(sample_image_path))
@@ -500,6 +545,7 @@ async def test_generate_layers_api_backend_validates_eye_mask_quality(
     monkeypatch.setenv("LIVE2D_PART_BACKEND", "api")
     monkeypatch.setenv("LIVE2D_PART_API_URL", "https://example.invalid/parts")
     monkeypatch.setenv("LIVE2D_PART_API_ALLOW_UPLOAD", "1")
+    monkeypatch.setenv("LIVE2D_PART_API_ALLOWED_HOSTS", "example.invalid")
     monkeypatch.setattr(APIPartDetectionBackend, "_default_transport", fake_transport)
 
     analyze_result = await analyze_photo(str(sample_image_path))
