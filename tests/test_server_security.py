@@ -227,26 +227,32 @@ def test_output_dir_traversal_is_rejected(candidate: str) -> None:
         _resolve_output_dir(candidate)
 
 
-def test_image_path_outside_project_root_is_rejected() -> None:
-    outside_path = Path(__file__).resolve().parents[2] / "outside_project_input.png"
-    try:
-        Image.new("RGBA", (32, 32), (255, 0, 0, 255)).save(outside_path, format="PNG")
-        with pytest.raises(InputValidationError, match="configured project input root"):
-            _resolve_image_path(str(outside_path))
-    finally:
-        outside_path.unlink(missing_ok=True)
+def test_image_path_outside_project_root_is_rejected(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    input_root = tmp_path / "input_root"
+    outside_path = tmp_path / "outside_project_input.png"
+    input_root.mkdir(parents=True, exist_ok=True)
+    Image.new("RGBA", (32, 32), (255, 0, 0, 255)).save(outside_path, format="PNG")
+    monkeypatch.setenv("LIVE2D_INPUT_ROOT", str(input_root))
+
+    with pytest.raises(InputValidationError, match="configured project input root"):
+        _resolve_image_path(str(outside_path))
 
 
 def test_image_path_outside_project_root_allows_trusted_local_override(
+    tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    outside_path = Path(__file__).resolve().parents[2] / "outside_project_input_override.png"
-    try:
-        Image.new("RGBA", (32, 32), (0, 255, 0, 255)).save(outside_path, format="PNG")
-        monkeypatch.setenv("LIVE2D_TRUST_LOCAL_IMAGE_PATHS", "1")
-        assert _resolve_image_path(str(outside_path)) == outside_path.resolve()
-    finally:
-        outside_path.unlink(missing_ok=True)
+    input_root = tmp_path / "input_root"
+    outside_path = tmp_path / "outside_project_input_override.png"
+    input_root.mkdir(parents=True, exist_ok=True)
+    Image.new("RGBA", (32, 32), (0, 255, 0, 255)).save(outside_path, format="PNG")
+    monkeypatch.setenv("LIVE2D_INPUT_ROOT", str(input_root))
+    monkeypatch.setenv("LIVE2D_TRUST_LOCAL_IMAGE_PATHS", "1")
+
+    assert _resolve_image_path(str(outside_path)) == outside_path.resolve()
 
 
 @pytest.mark.asyncio
