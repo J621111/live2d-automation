@@ -157,6 +157,11 @@ class Live2DExporter:
         files: dict[str, str] = {}
         errors: list[str] = []
         warnings: list[str] = []
+        readiness = {
+            "artifact_stage": "mock-intermediate",
+            "direct_viewer_compatible": False,
+            "ready_for_cubism_editor": False,
+        }
 
         try:
             model3_data = self._build_model3_json(model_name, state)
@@ -178,9 +183,7 @@ class Live2DExporter:
             temp_metadata = output_path / "export_metadata_temp.json"
             export_metadata = {
                 "schema_version": 1,
-                "artifact_stage": "mock-intermediate",
-                "direct_viewer_compatible": False,
-                "ready_for_cubism_editor": False,
+                **readiness,
             }
             with open(temp_metadata, "w", encoding="utf-8") as handle:
                 json.dump(export_metadata, handle, indent=2)
@@ -324,9 +327,7 @@ Important:
             "warnings": warnings,
             "missing_critical_outputs": missing_critical,
             "validation": validation,
-            "artifact_stage": "mock-intermediate",
-            "direct_viewer_compatible": False,
-            "ready_for_cubism_editor": False,
+            **readiness,
         }
 
     def _parameter_ranges(self, rigging: JsonDict) -> dict[str, tuple[float, float]]:
