@@ -6,11 +6,27 @@ import os
 import shlex
 import shutil
 import subprocess
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, cast, overload
 
 from mcp_server.artifacts import ArtifactStore, redact_command
+from mcp_server.cubism_contracts import (
+    AutomationMode,
+    AutomationPlan,
+    BackendName,
+    DispatchBundle,
+    DispatchExecution,
+    DispatchStatus,
+    DispatchStep,
+    EditorInfo,
+    ExecutionPreparation,
+    ExecutionStep,
+    PreflightCommand,
+    PreflightResult,
+    PreparationStatus,
+)
 from mcp_server.tools import cubism_calibration
 from mcp_server.tools.export_validator import CubismExportValidator
 from mcp_server.tools.native_gui_controller import NativeWindowsGUIController
@@ -27,8 +43,8 @@ _SCRIPT_SUFFIXES = {"", ".cmd", ".bat", ".sh", ".ps1"}
 
 @dataclass(frozen=True)
 class BackendDescriptor:
-    name: str
-    automation_mode: str
+    name: BackendName
+    automation_mode: AutomationMode
     execution_supported: bool
     requirements: list[str]
     capabilities: list[str]
@@ -40,7 +56,7 @@ class CubismAutomationManager:
 
     def __init__(self) -> None:
         self._native_controller = NativeWindowsGUIController()
-        self._descriptors: dict[str, BackendDescriptor] = {
+        self._descriptors: dict[BackendName, BackendDescriptor] = {
             "native_gui": BackendDescriptor(
                 name="native_gui",
                 automation_mode="assisted",
@@ -91,7 +107,7 @@ class CubismAutomationManager:
             raise ValueError(
                 f"Unsupported automation backend '{candidate}'. Allowed values: {allowed}."
             )
-        return self._descriptors[normalized]
+        return self._descriptors[cast(BackendName, normalized)]
 
     def _parse_command(self, command_hint: str) -> list[str]:
         return [token.strip("\"'") for token in shlex.split(command_hint, posix=False) if token]
@@ -122,7 +138,7 @@ class CubismAutomationManager:
                 resolved = str(candidate_path.resolve())
         return resolved
 
-    def _opencli_preflight_commands(self, invocation_prefix: list[str]) -> list[JsonDict]:
+    def _opencli_preflight_commands(self, invocation_prefix: list[str]) -> list[PreflightCommand]:
         return [
             {
                 "name": "doctor",
@@ -136,8 +152,8 @@ class CubismAutomationManager:
             },
         ]
 
-    def _run_preflight_commands(self, commands: list[JsonDict]) -> list[JsonDict]:
-        results: list[JsonDict] = []
+    def _run_preflight_commands(self, commands: list[PreflightCommand]) -> list[PreflightResult]:
+        results: list[PreflightResult] = []
         for command in commands:
             argv = [str(item) for item in command.get("argv", [])]
             if not argv:
@@ -289,8 +305,8 @@ class CubismAutomationManager:
         elif validation_error is not None:
             status = "missing"
 
-        preflight_commands: list[JsonDict] = []
-        preflight_results: list[JsonDict] = []
+        preflight_commands: list[PreflightCommand] = []
+        preflight_results: list[PreflightResult] = []
         if status == "ready":
             preflight_commands = self._opencli_preflight_commands(invocation_prefix)
             preflight_results = self._run_preflight_commands(preflight_commands)
@@ -314,21 +330,52 @@ class CubismAutomationManager:
             "validation_error": validation_error,
         }
 
+    @overload
     def build_dispatch_bundle(
         self,
         backend_name: str,
         *,
-        plan: JsonDict,
-        execution: JsonDict,
+        plan: AutomationPlan,
+        execution: ExecutionPreparation,
         template_id: str,
         model_name: str,
         psd_path: str,
         output_dir: str,
-        editor_info: JsonDict,
-    ) -> JsonDict:
+        editor_info: EditorInfo,
+    ) -> DispatchBundle: ...
+
+    @overload
+    def build_dispatch_bundle(
+        self,
+        backend_name: str,
+        *,
+        plan: Mapping[str, object],
+        execution: Mapping[str, object],
+        template_id: str,
+        model_name: str,
+        psd_path: str,
+        output_dir: str,
+        editor_info: Mapping[str, object],
+    ) -> Any: ...
+
+    def build_dispatch_bundle(
+        self,
+        backend_name: str,
+        *,
+        plan: object,
+        execution: object,
+        template_id: str,
+        model_name: str,
+        psd_path: str,
+        output_dir: str,
+        editor_info: object,
+    ) -> object:
+        typed_plan = cast(AutomationPlan, plan)
+        typed_execution = cast(ExecutionPreparation, execution)
+        typed_editor_info = cast(EditorInfo, editor_info)
         descriptor = self.resolve_backend(backend_name)
-        dispatch_steps: list[JsonDict] = []
-        for step in plan.get("steps", []):
+        dispatch_steps: list[DispatchStep] = []
+        for step in typed_plan.get("steps", []):
             action = str(step.get("action", ""))
             dispatch_steps.append(
                 {
@@ -343,37 +390,57 @@ class CubismAutomationManager:
             )
 
         return {
-            "status": execution.get("status", "blocked"),
+            "status": typed_execution.get("status", "blocked"),
             "backend": descriptor.name,
             "automation_mode": descriptor.automation_mode,
             "ready_to_execute": (
-                descriptor.execution_supported and execution.get("status") == "ready"
+                descriptor.execution_supported and typed_execution.get("status") == "ready"
             ),
             "execution_supported": descriptor.execution_supported,
             "template_id": template_id,
             "model_name": model_name,
             "psd_path": psd_path,
             "output_dir": output_dir,
-            "editor": editor_info,
-            "integration_target": execution.get("integration_target"),
-            "native_controller": execution.get("native_controller"),
-            "native_adapter": execution.get("native_adapter"),
+            "editor": typed_editor_info,
+            "integration_target": typed_execution.get("integration_target"),
+            "native_controller": typed_execution.get("native_controller"),
+            "native_adapter": typed_execution.get("native_adapter"),
             "preflight": {
-                "commands": execution.get("preflight_commands", []),
-                "results": execution.get("preflight_results", []),
+                "commands": typed_execution.get("preflight_commands", []),
+                "results": typed_execution.get("preflight_results", []),
             },
             "dispatch_steps": dispatch_steps,
-            "warnings": execution.get("warnings", []),
+            "warnings": typed_execution.get("warnings", []),
         }
+
+    @overload
+    def execute_dispatch_bundle(
+        self,
+        bundle: DispatchBundle,
+        *,
+        previous_execution: DispatchExecution | None = None,
+        resume: bool = False,
+    ) -> DispatchExecution: ...
+
+    @overload
+    def execute_dispatch_bundle(
+        self,
+        bundle: Mapping[str, object],
+        *,
+        previous_execution: Mapping[str, object] | None = None,
+        resume: bool = False,
+    ) -> Any: ...
 
     def execute_dispatch_bundle(
         self,
-        bundle: JsonDict,
+        bundle: object,
         *,
-        previous_execution: JsonDict | None = None,
+        previous_execution: object | None = None,
         resume: bool = False,
-    ) -> JsonDict:
-        backend = str(bundle.get("backend", "native_gui"))
+    ) -> object:
+        typed_bundle = cast(DispatchBundle, bundle)
+        typed_previous_execution = cast(DispatchExecution | None, previous_execution)
+        backend = str(typed_bundle.get("backend", "native_gui"))
         descriptor = self.resolve_backend(backend)
         if not descriptor.execution_supported:
             return {
@@ -386,7 +453,7 @@ class CubismAutomationManager:
                     "dispatch execution is unavailable."
                 ),
             }
-        if not bool(bundle.get("ready_to_execute", False)):
+        if not bool(typed_bundle.get("ready_to_execute", False)):
             return {
                 "status": "blocked",
                 "backend": descriptor.name,
@@ -394,22 +461,24 @@ class CubismAutomationManager:
                 "artifacts": [],
                 "message": "Dispatch bundle is not ready_to_execute.",
             }
-        artifact_store = ArtifactStore(str(bundle.get("output_dir", ".")))
+        artifact_store = ArtifactStore(str(typed_bundle.get("output_dir", ".")))
         output_dir = artifact_store.output_dir
-        editor_info = dict(bundle.get("editor", {}))
+        editor_info = dict(typed_bundle.get("editor", {}))
         editor_path = (
             Path(str(editor_info.get("editor_path", "")))
             if editor_info.get("editor_path")
             else None
         )
-        psd_path = Path(str(bundle.get("psd_path", ""))) if bundle.get("psd_path") else None
-        native_controller = dict(bundle.get("native_controller") or {})
-        native_adapter = dict(bundle.get("native_adapter") or {})
+        psd_path = (
+            Path(str(typed_bundle.get("psd_path", ""))) if typed_bundle.get("psd_path") else None
+        )
+        native_controller = dict(typed_bundle.get("native_controller") or {})
+        native_adapter = dict(typed_bundle.get("native_adapter") or {})
 
-        executed_steps: list[JsonDict] = []
+        executed_steps: list[ExecutionStep] = []
         artifacts: list[str] = []
         step_statuses: dict[str, str] = {}
-        previous_successes = self._resume_successes(previous_execution) if resume else set()
+        previous_successes = self._resume_successes(typed_previous_execution) if resume else set()
         resume_probe = (
             self._probe_native_resume_window(native_controller, output_dir)
             if resume and previous_successes
@@ -418,7 +487,8 @@ class CubismAutomationManager:
         if resume_probe and resume_probe.get("artifact_path"):
             artifacts.append(str(resume_probe["artifact_path"]))
         halted_after_error = False
-        for step in bundle.get("dispatch_steps", []):
+        for step in typed_bundle.get("dispatch_steps", []):
+            result: ExecutionStep
             action = str(step.get("source_action", ""))
             can_skip = action in previous_successes and self._can_skip_resumed_action(
                 action,
@@ -452,20 +522,40 @@ class CubismAutomationManager:
                     "details": "Launch is deferred to import_psd via direct document open.",
                 }
             elif action == "launch_editor":
-                result = self._execute_native_launch(
-                    editor_path, output_dir, native_controller, native_adapter, bundle
+                result = cast(
+                    ExecutionStep,
+                    self._execute_native_launch(
+                        editor_path,
+                        output_dir,
+                        native_controller,
+                        native_adapter,
+                        typed_bundle,
+                    ),
                 )
             elif action == "import_psd":
-                result = self._execute_native_import(
-                    psd_path, output_dir, native_controller, native_adapter, bundle
+                result = cast(
+                    ExecutionStep,
+                    self._execute_native_import(
+                        psd_path,
+                        output_dir,
+                        native_controller,
+                        native_adapter,
+                        typed_bundle,
+                    ),
                 )
             elif action == "apply_template":
-                result = self._execute_native_apply_template(
-                    output_dir, native_controller, native_adapter, bundle
+                result = cast(
+                    ExecutionStep,
+                    self._execute_native_apply_template(
+                        output_dir, native_controller, native_adapter, typed_bundle
+                    ),
                 )
             elif action == "export_embedded_data":
-                result = self._execute_native_export(
-                    output_dir, native_controller, native_adapter, bundle
+                result = cast(
+                    ExecutionStep,
+                    self._execute_native_export(
+                        output_dir, native_controller, native_adapter, typed_bundle
+                    ),
                 )
             elif action == "validate_export_bundle":
                 if step_statuses.get("export_embedded_data") != "success":
@@ -476,7 +566,10 @@ class CubismAutomationManager:
                         "details": "Validation is deferred until export_embedded_data succeeds.",
                     }
                 else:
-                    result = self._execute_local_validation(output_dir, bundle)
+                    result = cast(
+                        ExecutionStep,
+                        self._execute_local_validation(output_dir, typed_bundle),
+                    )
             else:
                 result = {
                     "step": step.get("step"),
@@ -498,10 +591,11 @@ class CubismAutomationManager:
         recorded = [step for step in executed_steps if step.get("status") == "recorded"]
         pending = [step for step in executed_steps if step.get("status") == "pending"]
         skipped = [step for step in executed_steps if step.get("status") == "skipped"]
-        current_successes = self._successful_actions({"executed_steps": executed_steps})
+        current_execution: DispatchExecution = {"executed_steps": executed_steps}
+        current_successes = self._successful_actions(current_execution)
         cumulative_successes = sorted(previous_successes.union(current_successes))
         if failed:
-            status = "error"
+            status: DispatchStatus = "error"
         elif recorded or pending:
             status = "partial"
         else:
@@ -559,7 +653,7 @@ class CubismAutomationManager:
         profile = dict(native_controller.get("profile") or {})
         return bool(profile.get("import_via_launch_argument", True))
 
-    def _resume_successes(self, execution: JsonDict | None) -> set[str]:
+    def _resume_successes(self, execution: DispatchExecution | None) -> set[str]:
         if not execution:
             return set()
         resume = dict(execution.get("resume") or {})
@@ -575,7 +669,7 @@ class CubismAutomationManager:
             actions.update(str(action) for action in skipped if str(action))
         return actions
 
-    def _successful_actions(self, execution: JsonDict | None) -> set[str]:
+    def _successful_actions(self, execution: DispatchExecution | None) -> set[str]:
         if not execution:
             return set()
         actions: set[str] = set()
@@ -616,7 +710,7 @@ class CubismAutomationManager:
         output_dir: Path,
         native_controller: JsonDict,
         native_adapter: JsonDict,
-        bundle: JsonDict,
+        bundle: DispatchBundle,
     ) -> JsonDict:
         if editor_path is None or not editor_path.exists():
             return {
@@ -719,7 +813,7 @@ class CubismAutomationManager:
         output_dir: Path,
         native_controller: JsonDict,
         native_adapter: JsonDict,
-        bundle: JsonDict,
+        bundle: DispatchBundle,
     ) -> JsonDict:
         if psd_path is None or not psd_path.exists():
             return {
@@ -851,7 +945,7 @@ class CubismAutomationManager:
         *,
         action: str,
         output_dir: Path,
-        bundle: JsonDict,
+        bundle: DispatchBundle,
         editor_path: Path | None,
         psd_path: Path | None,
         fallback_on_nonzero: bool = False,
@@ -925,7 +1019,7 @@ class CubismAutomationManager:
         output_dir: Path,
         native_controller: JsonDict,
         native_adapter: JsonDict,
-        bundle: JsonDict,
+        bundle: DispatchBundle,
     ) -> JsonDict:
         controller_result = self._execute_native_controller_apply_template(
             native_controller,
@@ -967,7 +1061,7 @@ class CubismAutomationManager:
         output_dir: Path,
         native_controller: JsonDict,
         native_adapter: JsonDict,
-        bundle: JsonDict,
+        bundle: DispatchBundle,
     ) -> JsonDict:
         controller_result = self._execute_native_controller_export(
             native_controller,
@@ -1004,7 +1098,7 @@ class CubismAutomationManager:
             "artifact_path": str(artifact_path),
         }
 
-    def _execute_local_validation(self, output_dir: Path, bundle: JsonDict) -> JsonDict:
+    def _execute_local_validation(self, output_dir: Path, bundle: DispatchBundle) -> JsonDict:
         model_name = str(bundle.get("model_name", "ATRI"))
         validator = CubismExportValidator()
         result = validator.validate(str(output_dir), model_name)
@@ -1023,9 +1117,14 @@ class CubismAutomationManager:
             "validation": result,
         }
 
-    def write_dispatch_bundle(self, bundle: JsonDict, output_dir: str, model_name: str) -> str:
+    def write_dispatch_bundle(
+        self, bundle: Mapping[str, object], output_dir: str, model_name: str
+    ) -> str:
         artifact_store = ArtifactStore(output_dir)
-        bundle_path = artifact_store.write_json(f"{model_name}_cubism_dispatch_bundle.json", bundle)
+        bundle_path = artifact_store.write_json(
+            f"{model_name}_cubism_dispatch_bundle.json",
+            cast(JsonDict, bundle),
+        )
         return str(bundle_path)
 
     def _dispatch_intent_for(self, action: str, backend_name: str) -> str:
@@ -1057,17 +1156,37 @@ class CubismAutomationManager:
             }
         return intents.get(action, f"Handle '{action}' through the selected automation backend.")
 
+    @overload
     def prepare_execution(
         self,
         backend_name: str | None,
         *,
-        editor_info: JsonDict,
-        plan: JsonDict,
-    ) -> JsonDict:
+        editor_info: EditorInfo,
+        plan: AutomationPlan,
+    ) -> ExecutionPreparation: ...
+
+    @overload
+    def prepare_execution(
+        self,
+        backend_name: str | None,
+        *,
+        editor_info: Mapping[str, object],
+        plan: Mapping[str, object],
+    ) -> Any: ...
+
+    def prepare_execution(
+        self,
+        backend_name: str | None,
+        *,
+        editor_info: object,
+        plan: object,
+    ) -> object:
+        typed_editor_info = cast(EditorInfo, editor_info)
+        typed_plan = cast(AutomationPlan, plan)
         descriptor = self.resolve_backend(backend_name)
         missing_requirements: list[str] = []
         warnings: list[str] = []
-        if editor_info.get("status") != "available":
+        if typed_editor_info.get("status") != "available":
             missing_requirements.append("cubism_editor")
         if not descriptor.execution_supported:
             missing_requirements.append("dispatch_execution")
@@ -1104,7 +1223,7 @@ class CubismAutomationManager:
                     "steps stay in record-only mode."
                 )
 
-        status = "ready" if not missing_requirements else "blocked"
+        status: PreparationStatus = "ready" if not missing_requirements else "blocked"
         return {
             "status": status,
             "backend": descriptor.name,
@@ -1132,5 +1251,5 @@ class CubismAutomationManager:
             ),
             "native_controller": native_controller,
             "native_adapter": native_adapter,
-            "plan_actions": [step.get("action") for step in plan.get("steps", [])],
+            "plan_actions": [step.get("action") for step in typed_plan.get("steps", [])],
         }
