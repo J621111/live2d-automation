@@ -166,9 +166,15 @@ class HeuristicPartDetectionBackend(PartDetectionBackend):
             return None
 
         kernel: np.ndarray = np.ones((3, 3), np.uint8)
-        mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel, iterations=1)
-        mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel, iterations=1)
-        component = self._best_component(mask, name)
+        cleaned_mask = np.asarray(
+            cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel, iterations=1),
+            dtype=np.uint8,
+        )
+        cleaned_mask = np.asarray(
+            cv2.morphologyEx(cleaned_mask, cv2.MORPH_CLOSE, kernel, iterations=1),
+            dtype=np.uint8,
+        )
+        component = self._best_component(cleaned_mask, name)
         if component is None:
             return None
 

@@ -230,9 +230,9 @@ class PartSegmenter:
             points.append([max(0, min(px, width - 1)), max(0, min(py, height - 1))])
         if len(points) < 3:
             return None
-        polygon = np.array([points], dtype=np.int32)
+        polygon = np.asarray(points, dtype=np.int32)
         mask: np.ndarray = np.zeros((height, width), dtype=np.uint8)
-        cv2.fillPoly(mask, polygon, 1)
+        cv2.fillPoly(mask, [polygon], 1)
         return cast(np.ndarray, np.asarray(mask, dtype=np.uint8))
 
     def _foreground_mask(self, crop: np.ndarray, part_name: str) -> np.ndarray:
@@ -288,10 +288,16 @@ class PartSegmenter:
             mask = alpha
 
         kernel: np.ndarray = np.ones((3, 3), np.uint8)
-        mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel, iterations=1)
-        mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel, iterations=1)
-        if np.count_nonzero(mask) >= 6:
-            return self._select_component(cast(np.ndarray, np.asarray(mask, dtype=np.uint8)), None)
+        cleaned_mask = np.asarray(
+            cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel, iterations=1),
+            dtype=np.uint8,
+        )
+        cleaned_mask = np.asarray(
+            cv2.morphologyEx(cleaned_mask, cv2.MORPH_CLOSE, kernel, iterations=1),
+            dtype=np.uint8,
+        )
+        if np.count_nonzero(cleaned_mask) >= 6:
+            return self._select_component(cleaned_mask, None)
         return cast(np.ndarray, np.asarray(alpha, dtype=np.uint8))
 
     def _focus_point(
