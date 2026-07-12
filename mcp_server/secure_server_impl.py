@@ -570,6 +570,7 @@ async def _prepare_cubism_automation_impl(
         "editor": editor_info,
         "automation_backend": descriptor.name,
         "automation_mode": plan.get("automation_mode"),
+        "execution_supported": execution.get("execution_supported", False),
         "backend_capabilities": execution.get("capabilities", []),
         "missing_requirements": execution.get("missing_requirements", []),
         "plan_path": plan_path,
@@ -578,7 +579,12 @@ async def _prepare_cubism_automation_impl(
         "message": (
             f"Cubism automation plan is ready for backend '{descriptor.name}'."
             if plan.get("status") == "ready"
-            else f"Cubism automation plan was created for backend '{descriptor.name}', but required tools are missing."
+            else (
+                f"Cubism automation plan was created for backend '{descriptor.name}', "
+                "but dispatch execution is unavailable."
+                if not execution.get("execution_supported", False)
+                else f"Cubism automation plan was created for backend '{descriptor.name}', but required tools are missing."
+            )
         ),
     }
 

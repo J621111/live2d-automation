@@ -21,6 +21,7 @@ from mcp_server.secure_server_impl import (
     validate_cubism_export,
 )
 from mcp_server.tools.cubism_automation import CubismAutomationManager
+from mcp_server.tools.cubism_bridge import CubismBridge
 from mcp_server.tools.native_gui_controller import NativeWindowsGUIController
 
 
@@ -95,6 +96,21 @@ def _write_command_script(path: Path, windows_lines: list[str], posix_lines: lis
     target.write_text(script, encoding="utf-8")
     target.chmod(0o755)
     return target
+
+
+def test_cubism_bridge_reports_generated_plan_without_execution_readiness() -> None:
+    plan = CubismBridge().build_plan(
+        psd_path="model.psd",
+        output_dir="output",
+        template_id="standard_bust_up",
+        model_name="PlanOnly",
+        editor_info={"status": "available", "editor_path": "CubismEditor5.exe"},
+        automation_backend="opencli",
+    )
+
+    assert plan["status"] == "planned"
+    assert plan["automation_mode"] == "planning"
+    assert plan["automation_backend"] == "opencli"
 
 
 @pytest.fixture
@@ -724,7 +740,7 @@ async def test_execute_cubism_dispatch_blocks_not_ready_bundle(
 
 
 @pytest.mark.asyncio
-async def test_execute_cubism_dispatch_blocks_opencli_backend(
+async def test_execute_cubism_dispatch_reports_opencli_as_planning_only(
     sample_image_path: Path,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -770,17 +786,19 @@ async def test_execute_cubism_dispatch_blocks_opencli_backend(
             editor_path=str(fake_editor),
             automation_backend="opencli",
         )
-        assert prepare_result["status"] == "ready"
+        assert prepare_result["status"] == "blocked"
+        assert prepare_result["execution_supported"] is False
+        assert prepare_result["missing_requirements"] == ["dispatch_execution"]
 
         execute_result = await execute_cubism_dispatch(session_id)
         assert execute_result["status"] == "blocked"
-        assert "only the native_gui backend" in execute_result["message"].lower()
+        assert "supports planning only" in execute_result["message"].lower()
     finally:
         await close_session(session_id)
 
 
 @pytest.mark.asyncio
-async def test_prepare_cubism_automation_supports_direct_opencli_backend(
+async def test_prepare_cubism_automation_marks_direct_opencli_as_planning_only(
     sample_image_path: Path,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -828,11 +846,12 @@ async def test_prepare_cubism_automation_supports_direct_opencli_backend(
             automation_backend="opencli",
         )
 
-        assert prepare_result["status"] == "ready"
+        assert prepare_result["status"] == "blocked"
         assert prepare_result["automation_backend"] == "opencli"
         assert prepare_result["automation_mode"] == "connector_assisted"
+        assert prepare_result["execution_supported"] is False
         assert prepare_result["backend_capabilities"]
-        assert prepare_result["missing_requirements"] == []
+        assert prepare_result["missing_requirements"] == ["dispatch_execution"]
 
         plan_data = json.loads(Path(prepare_result["plan_path"]).read_text(encoding="utf-8"))
         dispatch_data = json.loads(
@@ -854,7 +873,8 @@ async def test_prepare_cubism_automation_supports_direct_opencli_backend(
         ]
         assert plan_data["execution"]["automation_mode"] == "connector_assisted"
         assert dispatch_data["backend"] == "opencli"
-        assert dispatch_data["ready_to_execute"] is True
+        assert dispatch_data["ready_to_execute"] is False
+        assert dispatch_data["execution_supported"] is False
         assert dispatch_data["dispatch_steps"][0]["dispatch_kind"] == "connector_intent"
         assert dispatch_data["dispatch_steps"][1]["intent"].lower().startswith("use opencli")
     finally:
@@ -912,7 +932,9 @@ async def test_prepare_cubism_automation_supports_wrapped_opencli_backend(
             automation_backend="opencli",
         )
 
-        assert prepare_result["status"] == "ready"
+        assert prepare_result["status"] == "blocked"
+        assert prepare_result["execution_supported"] is False
+        assert prepare_result["missing_requirements"] == ["dispatch_execution"]
         plan_data = json.loads(Path(prepare_result["plan_path"]).read_text(encoding="utf-8"))
         assert Path(prepare_result["dispatch_bundle_path"]).exists()
         assert plan_data["execution"]["resolved_executable"] == str(fake_uvx.resolve())
@@ -968,7 +990,11 @@ async def test_prepare_cubism_automation_blocks_unresolvable_opencli_command(
 
         assert prepare_result["status"] == "blocked"
         assert prepare_result["automation_backend"] == "opencli"
-        assert prepare_result["missing_requirements"] == ["opencli_command", "opencli_runtime"]
+        assert prepare_result["missing_requirements"] == [
+            "dispatch_execution",
+            "opencli_command",
+            "opencli_runtime",
+        ]
 
         plan_data = json.loads(Path(prepare_result["plan_path"]).read_text(encoding="utf-8"))
         assert plan_data["execution"]["resolved_executable"] is None
@@ -1090,7 +1116,10 @@ async def test_prepare_cubism_automation_blocks_opencli_preflight_failures(
         )
 
         assert prepare_result["status"] == "blocked"
-        assert prepare_result["missing_requirements"] == ["opencli_runtime"]
+        assert prepare_result["missing_requirements"] == [
+            "dispatch_execution",
+            "opencli_runtime",
+        ]
 
         plan_data = json.loads(Path(prepare_result["plan_path"]).read_text(encoding="utf-8"))
         results = {item["name"]: item for item in plan_data["execution"]["preflight_results"]}

@@ -92,11 +92,11 @@ class CubismBridge:
         ]
 
         return {
-            "status": "ready" if editor_info.get("status") == "available" else "blocked",
+            "status": "planned",
             "editor": editor_info,
             "steps": plan_steps,
             "automation_backend": automation_backend,
-            "automation_mode": "assisted",
+            "automation_mode": "planning",
         }
 
     def write_plan(self, plan: JsonDict, output_dir: str, model_name: str) -> str:
