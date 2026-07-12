@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, cast
 
 import cv2
 import numpy as np
+from numpy.typing import NDArray
 from PIL import Image
 
 from mcp_server.schemas import BoundingBox, DetectedPart
@@ -145,7 +146,7 @@ class HeuristicPartDetectionBackend(PartDetectionBackend):
             return None
 
         rgb = cv2.cvtColor(crop[:, :, :3], cv2.COLOR_RGB2BGR)
-        gray = cv2.cvtColor(rgb, cv2.COLOR_BGR2GRAY)
+        gray = cast(NDArray[np.uint8], cv2.cvtColor(rgb, cv2.COLOR_BGR2GRAY))
         alpha = crop[:, :, 3]
         alpha_mask = alpha > 0
         if not np.count_nonzero(alpha_mask):
@@ -186,7 +187,7 @@ class HeuristicPartDetectionBackend(PartDetectionBackend):
         if not contours:
             return None
 
-        contour = max(contours, key=cv2.contourArea)
+        contour = cast(NDArray[np.int32], max(contours, key=cv2.contourArea)).reshape(-1, 2)
         padding_x = max(1, int(component_box[2] * 0.12))
         padding_y = max(1, int(component_box[3] * 0.18))
         x = max(0, component_box[0] - padding_x)
@@ -200,9 +201,7 @@ class HeuristicPartDetectionBackend(PartDetectionBackend):
             width=max(1, max_x - x),
             height=max(1, max_y - y),
         )
-        polygon = [
-            {"x": int(point[0][0]) + box.x, "y": int(point[0][1]) + box.y} for point in contour
-        ]
+        polygon = [{"x": int(point[0]) + box.x, "y": int(point[1]) + box.y} for point in contour]
         return global_box, polygon
 
     def _best_component(

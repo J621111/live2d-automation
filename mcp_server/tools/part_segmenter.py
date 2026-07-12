@@ -7,6 +7,7 @@ from typing import Any, cast
 
 import cv2
 import numpy as np
+from numpy.typing import NDArray
 from PIL import Image
 
 from mcp_server.schemas import BoundingBox, DetectedPart, LayerAsset
@@ -241,7 +242,7 @@ class PartSegmenter:
             return cast(np.ndarray, alpha)
 
         rgb: np.ndarray = crop[:, :, :3].astype(np.uint8)
-        gray = cv2.cvtColor(rgb, cv2.COLOR_RGB2GRAY)
+        gray = cast(NDArray[np.uint8], cv2.cvtColor(rgb, cv2.COLOR_RGB2GRAY))
         hsv = cv2.cvtColor(rgb, cv2.COLOR_RGB2HSV)
         saturation = hsv[:, :, 1].astype(np.int16)
         value = hsv[:, :, 2].astype(np.int16)
