@@ -119,6 +119,7 @@ async def test_segment_detected_parts_tightens_eye_crop(
             alpha = layer.getchannel("A")
             extrema = alpha.getextrema()
             assert extrema is not None
+            assert isinstance(extrema[1], int)
             assert extrema[1] > 0
             assert layer.width < detected_width or layer.height < detected_height
     finally:
