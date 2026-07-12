@@ -29,6 +29,7 @@ _SCRIPT_SUFFIXES = {"", ".cmd", ".bat", ".sh", ".ps1"}
 class BackendDescriptor:
     name: str
     automation_mode: str
+    execution_supported: bool
     requirements: list[str]
     capabilities: list[str]
     env_vars: list[str]
@@ -43,6 +44,7 @@ class CubismAutomationManager:
             "native_gui": BackendDescriptor(
                 name="native_gui",
                 automation_mode="assisted",
+                execution_supported=True,
                 requirements=["cubism_editor"],
                 capabilities=[
                     "window_launch",
@@ -61,10 +63,16 @@ class CubismAutomationManager:
             "opencli": BackendDescriptor(
                 name="opencli",
                 automation_mode="connector_assisted",
-                requirements=["cubism_editor", "opencli_command", "opencli_runtime"],
+                execution_supported=False,
+                requirements=[
+                    "cubism_editor",
+                    "opencli_command",
+                    "opencli_runtime",
+                    "dispatch_execution",
+                ],
                 capabilities=[
                     "app_connector_bridge",
-                    "step_dispatch",
+                    "step_dispatch_plan",
                     "audit_ready_plan",
                     "browser_extension_handshake",
                 ],
@@ -338,7 +346,10 @@ class CubismAutomationManager:
             "status": execution.get("status", "blocked"),
             "backend": descriptor.name,
             "automation_mode": descriptor.automation_mode,
-            "ready_to_execute": execution.get("status") == "ready",
+            "ready_to_execute": (
+                descriptor.execution_supported and execution.get("status") == "ready"
+            ),
+            "execution_supported": descriptor.execution_supported,
             "template_id": template_id,
             "model_name": model_name,
             "psd_path": psd_path,
@@ -364,6 +375,17 @@ class CubismAutomationManager:
     ) -> JsonDict:
         backend = str(bundle.get("backend", "native_gui"))
         descriptor = self.resolve_backend(backend)
+        if not descriptor.execution_supported:
+            return {
+                "status": "blocked",
+                "backend": descriptor.name,
+                "executed_steps": [],
+                "artifacts": [],
+                "message": (
+                    f"Backend '{descriptor.name}' supports planning only; "
+                    "dispatch execution is unavailable."
+                ),
+            }
         if not bool(bundle.get("ready_to_execute", False)):
             return {
                 "status": "blocked",
@@ -372,15 +394,6 @@ class CubismAutomationManager:
                 "artifacts": [],
                 "message": "Dispatch bundle is not ready_to_execute.",
             }
-        if descriptor.name != "native_gui":
-            return {
-                "status": "blocked",
-                "backend": descriptor.name,
-                "executed_steps": [],
-                "artifacts": [],
-                "message": "Execution PoC currently supports only the native_gui backend.",
-            }
-
         artifact_store = ArtifactStore(str(bundle.get("output_dir", ".")))
         output_dir = artifact_store.output_dir
         editor_info = dict(bundle.get("editor", {}))
@@ -1056,6 +1069,12 @@ class CubismAutomationManager:
         warnings: list[str] = []
         if editor_info.get("status") != "available":
             missing_requirements.append("cubism_editor")
+        if not descriptor.execution_supported:
+            missing_requirements.append("dispatch_execution")
+            warnings.append(
+                f"Backend '{descriptor.name}' supports planning only; "
+                "dispatch execution is unavailable."
+            )
 
         command_info: JsonDict | None = None
         native_controller = self._resolve_native_controller()
@@ -1090,6 +1109,7 @@ class CubismAutomationManager:
             "status": status,
             "backend": descriptor.name,
             "automation_mode": descriptor.automation_mode,
+            "execution_supported": descriptor.execution_supported,
             "requirements": descriptor.requirements,
             "missing_requirements": sorted(set(missing_requirements)),
             "capabilities": descriptor.capabilities,
