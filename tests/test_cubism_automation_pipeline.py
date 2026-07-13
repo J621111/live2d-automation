@@ -867,10 +867,7 @@ async def test_prepare_cubism_automation_marks_direct_opencli_as_planning_only(
             str(fake_opencli),
             "doctor",
         ]
-        assert [result["status"] for result in plan_data["execution"]["preflight_results"]] == [
-            "success",
-            "success",
-        ]
+        assert plan_data["execution"]["preflight_results"] == []
         assert plan_data["execution"]["automation_mode"] == "connector_assisted"
         assert dispatch_data["backend"] == "opencli"
         assert dispatch_data["ready_to_execute"] is False
@@ -944,10 +941,7 @@ async def test_prepare_cubism_automation_supports_wrapped_opencli_backend(
             "opencli",
             "list",
         ]
-        assert [result["status"] for result in plan_data["execution"]["preflight_results"]] == [
-            "success",
-            "success",
-        ]
+        assert plan_data["execution"]["preflight_results"] == []
     finally:
         await close_session(session_id)
 
@@ -1067,7 +1061,7 @@ async def test_prepare_cubism_automation_blocks_non_opencli_wrapper(
 
 
 @pytest.mark.asyncio
-async def test_prepare_cubism_automation_blocks_opencli_preflight_failures(
+async def test_prepare_cubism_automation_requires_opt_in_for_opencli_preflight(
     sample_image_path: Path,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -1116,18 +1110,26 @@ async def test_prepare_cubism_automation_blocks_opencli_preflight_failures(
         )
 
         assert prepare_result["status"] == "blocked"
-        assert prepare_result["missing_requirements"] == [
+        assert prepare_result["missing_requirements"] == ["dispatch_execution"]
+
+        plan_data = json.loads(Path(prepare_result["plan_path"]).read_text(encoding="utf-8"))
+        assert plan_data["execution"]["preflight_results"] == []
+
+        opted_in = CubismAutomationManager().prepare_execution(
+            "opencli",
+            editor_info={"status": "available", "editor_path": str(fake_editor)},
+            plan={"steps": []},
+            run_preflight=True,
+        )
+        assert opted_in["missing_requirements"] == [
             "dispatch_execution",
             "opencli_runtime",
         ]
-
-        plan_data = json.loads(Path(prepare_result["plan_path"]).read_text(encoding="utf-8"))
-        results = {item["name"]: item for item in plan_data["execution"]["preflight_results"]}
+        results = {item["name"]: item for item in opted_in["preflight_results"]}
         assert results["doctor"]["status"] == "success"
         assert results["list"]["status"] == "error"
         assert any(
-            "preflight commands failed" in warning.lower()
-            for warning in plan_data["execution"]["warnings"]
+            "preflight commands failed" in warning.lower() for warning in opted_in["warnings"]
         )
     finally:
         await close_session(session_id)

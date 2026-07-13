@@ -880,6 +880,7 @@ class CubismAutomationManager:
         *,
         editor_info: EditorInfo,
         plan: AutomationPlan,
+        run_preflight: bool = False,
     ) -> ExecutionPreparation: ...
 
     @overload
@@ -889,6 +890,7 @@ class CubismAutomationManager:
         *,
         editor_info: Mapping[str, object],
         plan: Mapping[str, object],
+        run_preflight: bool = False,
     ) -> Any: ...
 
     def prepare_execution(
@@ -897,6 +899,7 @@ class CubismAutomationManager:
         *,
         editor_info: object,
         plan: object,
+        run_preflight: bool = False,
     ) -> object:
         typed_editor_info = cast(EditorInfo, editor_info)
         typed_plan = cast(AutomationPlan, plan)
@@ -904,4 +907,5 @@ class CubismAutomationManager:
             backend_name,
             editor_info=typed_editor_info,
             plan=typed_plan,
+            run_preflight=run_preflight,
         )

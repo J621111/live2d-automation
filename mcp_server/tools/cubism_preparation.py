@@ -103,6 +103,7 @@ class CubismPreparationService:
         *,
         editor_info: EditorInfo,
         plan: AutomationPlan,
+        run_preflight: bool = False,
     ) -> ExecutionPreparation:
         descriptor = self.resolve_backend(backend_name)
         missing_requirements: list[str] = []
@@ -120,7 +121,10 @@ class CubismPreparationService:
         native_controller = self._resolve_native_controller()
         native_adapter: JsonDict | None = None
         if descriptor.name == "opencli":
-            command_info = self._resolve_opencli_command(os.getenv("OPENCLI_COMMAND"))
+            command_info = self._resolve_opencli_command(
+                os.getenv("OPENCLI_COMMAND"),
+                run_preflight=run_preflight,
+            )
             if command_info.get("resolved_executable") is None:
                 missing_requirements.append("opencli_command")
             if command_info.get("status") != "ready":
@@ -316,7 +320,12 @@ class CubismPreparationService:
             "validation_error": None,
         }
 
-    def _resolve_opencli_command(self, command_hint: str | None) -> JsonDict:
+    def _resolve_opencli_command(
+        self,
+        command_hint: str | None,
+        *,
+        run_preflight: bool,
+    ) -> JsonDict:
         if not command_hint:
             return {
                 "status": "missing",
@@ -376,6 +385,7 @@ class CubismPreparationService:
         preflight_results: list[PreflightResult] = []
         if status == "ready":
             preflight_commands = self._opencli_preflight_commands(invocation_prefix)
+        if status == "ready" and run_preflight:
             preflight_results = self._run_preflight_commands(preflight_commands)
             failing = [
                 result for result in preflight_results if result.get("status") not in {"success"}
