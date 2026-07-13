@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import subprocess
+from pathlib import Path
+
 import pytest
 
 from mcp_server.tools.cubism_preparation import CubismPreparationService
@@ -29,3 +32,80 @@ def test_preparation_service_resolves_catalog_and_native_execution(
     assert preparation["missing_requirements"] == []
     assert preparation["native_controller"]["status"] == "disabled"
     assert preparation["plan_actions"] == ["launch_editor"]
+
+
+def test_opencli_preflight_reports_wrapper_command_failures(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    launcher = tmp_path / "uvx"
+    launcher.write_text("", encoding="utf-8")
+    monkeypatch.setenv("OPENCLI_COMMAND", f'"{launcher}" opencli run cubism')
+    calls: list[list[str]] = []
+
+    def fake_run(argv: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        calls.append(argv)
+        return subprocess.CompletedProcess(
+            argv,
+            0 if argv[-1] == "doctor" else 3,
+            stdout="healthy" if argv[-1] == "doctor" else "",
+            stderr="connector unavailable" if argv[-1] == "list" else "",
+        )
+
+    monkeypatch.setattr("mcp_server.tools.cubism_preparation.subprocess.run", fake_run)
+    service = CubismPreparationService(NativeWindowsGUIController())
+
+    preparation = service.prepare_execution(
+        "opencli",
+        editor_info={"status": "available", "editor_path": "CubismEditor5.exe"},
+        plan={"steps": []},
+        run_preflight=True,
+    )
+
+    assert calls == [
+        [str(launcher), "opencli", "doctor"],
+        [str(launcher), "opencli", "list"],
+    ]
+    assert preparation["invocation_prefix"] == [str(launcher), "opencli"]
+    assert [result["status"] for result in preparation["preflight_results"]] == [
+        "success",
+        "error",
+    ]
+    assert preparation["missing_requirements"] == [
+        "dispatch_execution",
+        "opencli_runtime",
+    ]
+    assert any("preflight commands failed" in warning for warning in preparation["warnings"])
+
+
+def test_opencli_preflight_rejects_non_opencli_wrapper_target(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    launcher = tmp_path / "uvx"
+    launcher.write_text("", encoding="utf-8")
+    monkeypatch.setenv("OPENCLI_COMMAND", f'"{launcher}" not-opencli run cubism')
+
+    def unexpected_run(*args: object, **kwargs: object) -> subprocess.CompletedProcess[str]:
+        raise AssertionError("Invalid wrapper targets must not run preflight commands.")
+
+    monkeypatch.setattr("mcp_server.tools.cubism_preparation.subprocess.run", unexpected_run)
+    service = CubismPreparationService(NativeWindowsGUIController())
+
+    preparation = service.prepare_execution(
+        "opencli",
+        editor_info={"status": "available", "editor_path": "CubismEditor5.exe"},
+        plan={"steps": []},
+        run_preflight=True,
+    )
+
+    assert preparation["preflight_commands"] == []
+    assert preparation["preflight_results"] == []
+    assert preparation["missing_requirements"] == [
+        "dispatch_execution",
+        "opencli_runtime",
+    ]
+    assert any(
+        "wrapper must target the exact opencli package" in warning
+        for warning in preparation["warnings"]
+    )
