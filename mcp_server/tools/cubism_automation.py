@@ -389,7 +389,7 @@ class CubismAutomationManager:
                 }
             )
 
-        return {
+        bundle: DispatchBundle = {
             "status": typed_execution.get("status", "blocked"),
             "backend": descriptor.name,
             "automation_mode": descriptor.automation_mode,
@@ -412,6 +412,7 @@ class CubismAutomationManager:
             "dispatch_steps": dispatch_steps,
             "warnings": typed_execution.get("warnings", []),
         }
+        return bundle
 
     @overload
     def execute_dispatch_bundle(
@@ -443,7 +444,7 @@ class CubismAutomationManager:
         backend = str(typed_bundle.get("backend", "native_gui"))
         descriptor = self.resolve_backend(backend)
         if not descriptor.execution_supported:
-            return {
+            unsupported_execution: DispatchExecution = {
                 "status": "blocked",
                 "backend": descriptor.name,
                 "executed_steps": [],
@@ -453,14 +454,16 @@ class CubismAutomationManager:
                     "dispatch execution is unavailable."
                 ),
             }
+            return unsupported_execution
         if not bool(typed_bundle.get("ready_to_execute", False)):
-            return {
+            unready_execution: DispatchExecution = {
                 "status": "blocked",
                 "backend": descriptor.name,
                 "executed_steps": [],
                 "artifacts": [],
                 "message": "Dispatch bundle is not ready_to_execute.",
             }
+            return unready_execution
         artifact_store = ArtifactStore(str(typed_bundle.get("output_dir", ".")))
         output_dir = artifact_store.output_dir
         editor_info = dict(typed_bundle.get("editor", {}))
@@ -600,7 +603,7 @@ class CubismAutomationManager:
             status = "partial"
         else:
             status = "success"
-        return {
+        dispatch_execution: DispatchExecution = {
             "status": status,
             "backend": descriptor.name,
             "executed_steps": executed_steps,
@@ -622,6 +625,7 @@ class CubismAutomationManager:
                 )
             ),
         }
+        return dispatch_execution
 
     def _probe_native_resume_window(
         self,
@@ -1224,7 +1228,7 @@ class CubismAutomationManager:
                 )
 
         status: PreparationStatus = "ready" if not missing_requirements else "blocked"
-        return {
+        preparation: ExecutionPreparation = {
             "status": status,
             "backend": descriptor.name,
             "automation_mode": descriptor.automation_mode,
@@ -1253,3 +1257,4 @@ class CubismAutomationManager:
             "native_adapter": native_adapter,
             "plan_actions": [step.get("action") for step in typed_plan.get("steps", [])],
         }
+        return preparation
