@@ -23,6 +23,7 @@ from core.mesh_generator import ArtMeshGenerator
 from mcp_server.session_store import (
     InMemorySessionStore,
     SessionRecord,
+    SessionRemovalReason,
     empty_session_state,
 )
 from mcp_server.tools.ai_part_detector import AIPartDetector
@@ -122,7 +123,11 @@ def _create_session() -> str:
     return _session_store_manager.create()
 
 
-def _remove_session(session_id: str, *, reason: str = "manual") -> bool:
+def _remove_session(
+    session_id: str,
+    *,
+    reason: SessionRemovalReason = "manual",
+) -> bool:
     return _session_store_manager.remove(session_id, reason=reason)
 
 

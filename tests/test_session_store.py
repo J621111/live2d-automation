@@ -1,6 +1,8 @@
+from typing import cast
+
 import pytest
 
-from mcp_server.session_store import InMemorySessionStore
+from mcp_server.session_store import InMemorySessionStore, SessionRemovalReason
 from mcp_server.validation import InputValidationError
 
 
@@ -39,6 +41,17 @@ def test_session_store_prunes_expired_records() -> None:
 
     assert session_id not in store.records
     assert store.metrics.expired_sessions == 1
+
+
+def test_session_store_rejects_unknown_removal_reason_before_deleting() -> None:
+    store = _store()
+    session_id = store.create()
+    invalid_reason = cast(SessionRemovalReason, "complete")
+
+    with pytest.raises(ValueError, match="Unsupported session removal reason"):
+        store.remove(session_id, reason=invalid_reason)
+
+    assert session_id in store.records
 
 
 def test_session_store_rejects_busy_and_concurrent_operations() -> None:

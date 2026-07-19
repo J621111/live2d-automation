@@ -9,11 +9,13 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from threading import RLock
-from typing import Any
+from typing import Any, Literal, TypeAlias
 
 from mcp_server.validation import InputValidationError
 
 SESSION_ID_RE = re.compile(r"^[A-Za-z0-9_-]{8,64}$")
+SessionRemovalReason: TypeAlias = Literal["manual", "completed", "expired"]
+_SESSION_REMOVAL_REASONS = {"manual", "completed", "expired"}
 
 
 def empty_session_state() -> dict[str, Any]:
@@ -115,7 +117,14 @@ class InMemorySessionStore:
             self.metrics.created_sessions += 1
             return session_id
 
-    def remove(self, session_id: str, *, reason: str = "manual") -> bool:
+    def remove(
+        self,
+        session_id: str,
+        *,
+        reason: SessionRemovalReason = "manual",
+    ) -> bool:
+        if reason not in _SESSION_REMOVAL_REASONS:
+            raise ValueError(f"Unsupported session removal reason: {reason!r}")
         with self.lock:
             record = self.records.pop(session_id, None)
             if record is None:
