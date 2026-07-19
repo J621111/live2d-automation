@@ -54,6 +54,22 @@ def test_session_store_rejects_unknown_removal_reason_before_deleting() -> None:
     assert session_id in store.records
 
 
+def test_session_store_tracks_removal_metrics_by_reason() -> None:
+    store = _store(max_sessions=3)
+    manual_session = store.create()
+    completed_session = store.create()
+    expired_session = store.create()
+
+    assert store.remove(manual_session, reason="manual") is True
+    assert store.remove(completed_session, reason="completed") is True
+    assert store.remove(expired_session, reason="expired") is True
+
+    assert store.records == {}
+    assert store.metrics.closed_sessions == 1
+    assert store.metrics.completed_sessions == 1
+    assert store.metrics.expired_sessions == 1
+
+
 def test_session_store_rejects_busy_and_concurrent_operations() -> None:
     store = _store(max_concurrent_operations=1)
     first_session = store.create()
