@@ -98,7 +98,8 @@ class InMemorySessionStore:
         expired = [
             session_id
             for session_id, record in self.records.items()
-            if current_time - record.last_accessed > self.ttl_seconds
+            if not record.active_operation
+            and current_time - record.last_accessed > self.ttl_seconds
         ]
         for session_id in expired:
             self.records.pop(session_id, None)

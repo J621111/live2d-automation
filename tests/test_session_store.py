@@ -43,6 +43,24 @@ def test_session_store_prunes_expired_records() -> None:
     assert store.metrics.expired_sessions == 1
 
 
+def test_session_store_does_not_prune_active_operations() -> None:
+    store = _store(ttl_seconds=10)
+    session_id = store.create()
+
+    with store.operation(session_id):
+        store.records[session_id].last_accessed = 100.0
+        store.prune_expired(now=111.0)
+
+        assert session_id in store.records
+        assert store.metrics.expired_sessions == 0
+
+    store.records[session_id].last_accessed = 100.0
+    store.prune_expired(now=111.0)
+
+    assert session_id not in store.records
+    assert store.metrics.expired_sessions == 1
+
+
 def test_session_store_rejects_unknown_removal_reason_before_deleting() -> None:
     store = _store()
     session_id = store.create()
