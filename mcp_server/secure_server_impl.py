@@ -4,14 +4,10 @@ from __future__ import annotations
 
 import json
 import os
-import re
 import sys
-import time
-import uuid
+from collections.abc import Iterator
 from contextlib import contextmanager
-from dataclasses import dataclass, field
 from pathlib import Path
-from threading import RLock
 from typing import Any
 
 from fastmcp import FastMCP
@@ -24,6 +20,11 @@ if str(project_root) not in sys.path:
     sys.path.append(str(project_root))
 
 from core.mesh_generator import ArtMeshGenerator
+from mcp_server.session_store import (
+    InMemorySessionStore,
+    SessionRecord,
+    empty_session_state,
+)
 from mcp_server.tools.ai_part_detector import AIPartDetector
 from mcp_server.tools.auto_rigger import AutoRigger
 from mcp_server.tools.cubism_automation import CubismAutomationManager
@@ -62,7 +63,6 @@ MAX_IMAGE_WIDTH = 4096
 MAX_IMAGE_HEIGHT = 4096
 MAX_IMAGE_PIXELS = 16_777_216
 ALLOWED_IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".webp"}
-SESSION_ID_RE = re.compile(r"^[A-Za-z0-9_-]{8,64}$")
 DEFAULT_MOTION_TYPES = ["idle", "tap", "move", "emotional"]
 ALLOWED_MOTION_TYPES = tuple(DEFAULT_MOTION_TYPES)
 MAX_MOTION_TYPES = len(DEFAULT_MOTION_TYPES)
@@ -91,55 +91,15 @@ SESSION_TTL_SECONDS = _env_int("LIVE2D_SESSION_TTL_SECONDS", 60 * 60)
 MAX_CONCURRENT_OPERATIONS = _env_int("LIVE2D_MAX_CONCURRENT_OPERATIONS", 4)
 
 
-@dataclass
-class SessionMetrics:
-    created_sessions: int = 0
-    rejected_sessions: int = 0
-    expired_sessions: int = 0
-    closed_sessions: int = 0
-    completed_sessions: int = 0
-
-
-@dataclass
-class SessionRecord:
-    """In-memory state for a single MCP session."""
-
-    session_id: str
-    state: dict[str, Any] = field(default_factory=lambda: _empty_state())
-    created_at: float = field(default_factory=time.time)
-    last_accessed: float = field(default_factory=time.time)
-    active_operation: bool = False
-
-
-def _empty_state() -> dict[str, Any]:
-    return {
-        "input_image": None,
-        "output_dir": None,
-        "segments": {},
-        "face_features": {},
-        "face_layers": [],
-        "layers": [],
-        "meshes": {},
-        "rigging": {},
-        "physics": {},
-        "motions": [],
-        "model_files": {},
-        "face_output_dir": None,
-        "analysis_metadata": {},
-        "layer_generation_metadata": {},
-        "ai_parts": [],
-        "ai_part_layers": [],
-        "cubism_template_mapping": {},
-        "cubism_psd_path": None,
-        "cubism_automation_plan": {},
-        "cubism_dispatch_bundle": {},
-        "cubism_dispatch_execution": {},
-    }
-
-
-session_store: dict[str, SessionRecord] = {}
-session_lock = RLock()
-session_metrics = SessionMetrics()
+_empty_state = empty_session_state
+_session_store_manager = InMemorySessionStore(
+    max_sessions=MAX_SESSIONS,
+    ttl_seconds=SESSION_TTL_SECONDS,
+    max_concurrent_operations=MAX_CONCURRENT_OPERATIONS,
+)
+session_store = _session_store_manager.records
+session_lock = _session_store_manager.lock
+session_metrics = _session_store_manager.metrics
 
 
 def _is_relative_to(path: Path, root: Path) -> bool:
@@ -147,104 +107,45 @@ def _is_relative_to(path: Path, root: Path) -> bool:
 
 
 def _new_session_id() -> str:
-    return f"job_{uuid.uuid4().hex[:12]}"
+    return _session_store_manager.new_session_id()
 
 
 def _validate_session_id(session_id: str) -> str:
-    if not SESSION_ID_RE.match(session_id):
-        raise InputValidationError("session_id contains unsupported characters.")
-    return session_id
+    return _session_store_manager.validate_session_id(session_id)
 
 
 def _prune_expired_sessions_locked(now: float | None = None) -> None:
-    current_time = now or time.time()
-    expired = [
-        session_id
-        for session_id, record in session_store.items()
-        if current_time - record.last_accessed > SESSION_TTL_SECONDS
-    ]
-    for session_id in expired:
-        session_store.pop(session_id, None)
-        session_metrics.expired_sessions += 1
+    _session_store_manager.prune_expired(now)
 
 
 def _create_session() -> str:
-    with session_lock:
-        _prune_expired_sessions_locked()
-        if len(session_store) >= MAX_SESSIONS:
-            session_metrics.rejected_sessions += 1
-            raise InputValidationError(
-                "Too many active sessions. Wait for an existing job to expire or finish."
-            )
-        session_id = _new_session_id()
-        session_store[session_id] = SessionRecord(session_id=session_id)
-        session_metrics.created_sessions += 1
-        return session_id
+    return _session_store_manager.create()
 
 
 def _remove_session(session_id: str, *, reason: str = "manual") -> bool:
-    with session_lock:
-        record = session_store.pop(session_id, None)
-        if record is None:
-            return False
-        if reason == "manual":
-            session_metrics.closed_sessions += 1
-        elif reason == "completed":
-            session_metrics.completed_sessions += 1
-        elif reason == "expired":
-            session_metrics.expired_sessions += 1
-        return True
+    return _session_store_manager.remove(session_id, reason=reason)
 
 
 def _get_session_record(session_id: str, *, touch: bool = True) -> SessionRecord:
-    _validate_session_id(session_id)
-    with session_lock:
-        _prune_expired_sessions_locked()
-        record = session_store.get(session_id)
-        if record is None:
-            raise InputValidationError("Unknown or expired session_id. Run analyze_photo first.")
-        if touch:
-            record.last_accessed = time.time()
-        return record
+    return _session_store_manager.get(session_id, touch=touch)
 
 
 def _get_session_state(session_id: str) -> dict[str, Any]:
-    return _get_session_record(session_id).state
+    return _session_store_manager.get_state(session_id)
 
 
 def _require_state_field(session_id: str, field: str, message: str) -> dict[str, Any]:
-    state = _get_session_state(session_id)
-    if not state.get(field):
-        raise InputValidationError(message)
-    return state
+    return _session_store_manager.require_state_field(session_id, field, message)
 
 
 def _active_operation_count() -> int:
-    return sum(1 for record in session_store.values() if record.active_operation)
+    return _session_store_manager.active_operation_count()
 
 
 @contextmanager
-def _session_operation(session_id: str):
-    with session_lock:
-        _prune_expired_sessions_locked()
-        record = _get_session_record(session_id, touch=False)
-        if record.active_operation:
-            session_metrics.rejected_sessions += 1
-            raise InputValidationError("This session is already busy running another operation.")
-        if _active_operation_count() >= MAX_CONCURRENT_OPERATIONS:
-            session_metrics.rejected_sessions += 1
-            raise InputValidationError("Server is busy. Retry after another job completes.")
-        record.active_operation = True
-        record.last_accessed = time.time()
-
-    try:
+def _session_operation(session_id: str) -> Iterator[SessionRecord]:
+    with _session_store_manager.operation(session_id) as record:
         yield record
-    finally:
-        with session_lock:
-            existing = session_store.get(session_id)
-            if existing is not None:
-                existing.active_operation = False
-                existing.last_accessed = time.time()
 
 
 def _partial_outputs(session_id: str | None) -> dict[str, Any]:
