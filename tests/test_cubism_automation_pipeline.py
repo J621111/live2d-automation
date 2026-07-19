@@ -2024,7 +2024,7 @@ def test_resume_requires_live_window_probe_before_skipping_prerequisites(
     }
 
     monkeypatch.setattr(
-        manager,
+        manager._dispatch_executor,
         "_probe_native_resume_window",
         lambda native_controller, output_dir: {
             "status": "error",
@@ -2032,7 +2032,7 @@ def test_resume_requires_live_window_probe_before_skipping_prerequisites(
         },
     )
     monkeypatch.setattr(
-        manager,
+        manager._dispatch_executor,
         "_execute_native_launch",
         lambda editor_path, output_dir, native_controller, native_adapter, bundle: {
             "source_action": "launch_editor",
@@ -2040,7 +2040,7 @@ def test_resume_requires_live_window_probe_before_skipping_prerequisites(
         },
     )
     monkeypatch.setattr(
-        manager,
+        manager._dispatch_executor,
         "_execute_native_import",
         lambda psd_path, output_dir, native_controller, native_adapter, bundle: {
             "source_action": "import_psd",
@@ -2048,7 +2048,7 @@ def test_resume_requires_live_window_probe_before_skipping_prerequisites(
         },
     )
     monkeypatch.setattr(
-        manager,
+        manager._dispatch_executor,
         "_execute_native_apply_template",
         lambda output_dir, native_controller, native_adapter, bundle: {
             "source_action": "apply_template",
@@ -2056,7 +2056,7 @@ def test_resume_requires_live_window_probe_before_skipping_prerequisites(
         },
     )
     monkeypatch.setattr(
-        manager,
+        manager._dispatch_executor,
         "_execute_native_export",
         lambda output_dir, native_controller, native_adapter, bundle: {
             "source_action": "export_embedded_data",
@@ -2064,7 +2064,7 @@ def test_resume_requires_live_window_probe_before_skipping_prerequisites(
         },
     )
     monkeypatch.setattr(
-        manager,
+        manager._dispatch_executor,
         "_execute_local_validation",
         lambda output_dir, bundle: {"source_action": "validate_export_bundle", "status": "success"},
     )
@@ -2108,7 +2108,7 @@ def test_execute_dispatch_defers_launch_when_import_uses_direct_open(
     }
 
     monkeypatch.setattr(
-        manager,
+        manager._dispatch_executor,
         "_execute_native_import",
         lambda *args, **kwargs: {
             "source_action": "import_psd",
@@ -2154,7 +2154,7 @@ def test_execute_dispatch_halts_after_import_error(
     }
 
     monkeypatch.setattr(
-        manager,
+        manager._dispatch_executor,
         "_execute_native_import",
         lambda *args, **kwargs: {
             "source_action": "import_psd",
@@ -2201,7 +2201,7 @@ def test_resume_does_not_skip_prerequisites_when_controller_cannot_probe(
     }
 
     monkeypatch.setattr(
-        manager,
+        manager._dispatch_executor,
         "_execute_native_launch",
         lambda editor_path, output_dir, native_controller, native_adapter, bundle: {
             "source_action": "launch_editor",
@@ -2209,7 +2209,7 @@ def test_resume_does_not_skip_prerequisites_when_controller_cannot_probe(
         },
     )
     monkeypatch.setattr(
-        manager,
+        manager._dispatch_executor,
         "_execute_native_import",
         lambda psd_path, output_dir, native_controller, native_adapter, bundle: {
             "source_action": "import_psd",
@@ -2217,7 +2217,7 @@ def test_resume_does_not_skip_prerequisites_when_controller_cannot_probe(
         },
     )
     monkeypatch.setattr(
-        manager,
+        manager._dispatch_executor,
         "_execute_native_apply_template",
         lambda output_dir, native_controller, native_adapter, bundle: {
             "source_action": "apply_template",
@@ -2225,7 +2225,7 @@ def test_resume_does_not_skip_prerequisites_when_controller_cannot_probe(
         },
     )
     monkeypatch.setattr(
-        manager,
+        manager._dispatch_executor,
         "_execute_native_export",
         lambda output_dir, native_controller, native_adapter, bundle: {
             "source_action": "export_embedded_data",
@@ -2233,7 +2233,7 @@ def test_resume_does_not_skip_prerequisites_when_controller_cannot_probe(
         },
     )
     monkeypatch.setattr(
-        manager,
+        manager._dispatch_executor,
         "_execute_local_validation",
         lambda output_dir, bundle: {"source_action": "validate_export_bundle", "status": "success"},
     )
