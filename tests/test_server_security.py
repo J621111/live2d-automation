@@ -136,6 +136,64 @@ async def test_export_model_uses_warning_or_default_message(
 
 
 @pytest.mark.asyncio
+async def test_face_feature_cache_handles_empty_layers_and_matches_output_dir(
+    sample_image_path: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    detect_calls = 0
+    extract_calls = 0
+
+    async def fake_detect_features(
+        _detector: object,
+        _image_path: str,
+    ) -> dict[str, object]:
+        nonlocal detect_calls
+        detect_calls += 1
+        return {"parts": {}}
+
+    async def fake_extract_face_parts(
+        _detector: object,
+        _image_path: str,
+        _output_dir: str,
+        *,
+        features: dict[str, object],
+    ) -> list[dict[str, object]]:
+        nonlocal extract_calls
+        extract_calls += 1
+        assert features == {"parts": {}}
+        return []
+
+    monkeypatch.setattr(
+        "mcp_server.pipeline_services.FacialFeatureDetector.detect_features",
+        fake_detect_features,
+    )
+    monkeypatch.setattr(
+        "mcp_server.pipeline_services.FacialFeatureDetector.extract_face_parts",
+        fake_extract_face_parts,
+    )
+
+    analyze_result = await analyze_photo(str(sample_image_path))
+    session_id = analyze_result["session_id"]
+    first_output_dir = tmp_path / "first"
+
+    try:
+        first_result = await detect_face_features(session_id, str(first_output_dir))
+        cached_result = await detect_face_features(session_id, str(first_output_dir))
+
+        assert first_result == cached_result
+        assert cached_result["layers_extracted"] == 0
+        assert detect_calls == 1
+        assert extract_calls == 1
+
+        await detect_face_features(session_id, str(tmp_path / "second"))
+        assert detect_calls == 2
+        assert extract_calls == 2
+    finally:
+        await close_session(session_id)
+
+
+@pytest.mark.asyncio
 async def test_large_image_is_rejected(tmp_path: Path) -> None:
     huge_image = _case_dir(tmp_path, "huge_image") / "huge.png"
     Image.new("RGBA", (5000, 5000), (255, 0, 0, 255)).save(huge_image, format="PNG")

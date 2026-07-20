@@ -73,8 +73,7 @@ class ImagePipelineService:
         face_output_dir = output_dir / "face_textures"
         face_output_dir_str = str(face_output_dir)
         if (
-            state.get("face_features")
-            and state.get("face_layers")
+            state.get("face_features_complete") is True
             and state.get("face_output_dir") == face_output_dir_str
         ):
             return state["face_features"], state["face_layers"], False
@@ -90,6 +89,7 @@ class ImagePipelineService:
         state["face_features"] = face_features
         state["face_layers"] = face_layers
         state["face_output_dir"] = face_output_dir_str
+        state["face_features_complete"] = True
         return face_features, face_layers, True
 
     async def detect_face_features(self, session_id: str, output_dir: Path) -> JsonDict:
