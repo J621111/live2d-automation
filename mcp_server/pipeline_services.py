@@ -316,12 +316,13 @@ class ImagePipelineService:
             state=state,
         )
         state["model_files"] = export_result.get("files", {})
+        warnings = export_result.get("warnings") or []
         return {
             "status": export_result.get("status", "error"),
             "session_id": session_id,
             "model_files": export_result.get("files", {}),
             "export_result": export_result,
-            "message": export_result.get("warnings", ["Export complete."])[0],
+            "message": warnings[0] if warnings else "Export complete.",
         }
 
 

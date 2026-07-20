@@ -95,6 +95,47 @@ async def test_status_hides_session_ids(sample_image_path: Path) -> None:
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("warnings", "expected_message"),
+    [
+        (None, "Export complete."),
+        ([], "Export complete."),
+        (["Export warning."], "Export warning."),
+    ],
+)
+async def test_export_model_uses_warning_or_default_message(
+    sample_image_path: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    warnings: list[str] | None,
+    expected_message: str,
+) -> None:
+    analyze_result = await analyze_photo(str(sample_image_path))
+    session_id = analyze_result["session_id"]
+
+    async def fake_export(*args: object, **kwargs: object) -> dict[str, object]:
+        result: dict[str, object] = {"status": "success", "files": {}}
+        if warnings is not None:
+            result["warnings"] = warnings
+        return result
+
+    monkeypatch.setattr(
+        "mcp_server.pipeline_services.Moc3Exporter.export",
+        fake_export,
+    )
+
+    try:
+        result = await export_model(
+            session_id,
+            str(tmp_path / "export"),
+            "MessageTest",
+        )
+        assert result["message"] == expected_message
+    finally:
+        await close_session(session_id)
+
+
+@pytest.mark.asyncio
 async def test_large_image_is_rejected(tmp_path: Path) -> None:
     huge_image = _case_dir(tmp_path, "huge_image") / "huge.png"
     Image.new("RGBA", (5000, 5000), (255, 0, 0, 255)).save(huge_image, format="PNG")
