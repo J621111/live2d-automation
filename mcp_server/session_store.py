@@ -25,6 +25,7 @@ def empty_session_state() -> dict[str, Any]:
         "segments": {},
         "face_features": {},
         "face_layers": [],
+        "face_features_complete": False,
         "layers": [],
         "meshes": {},
         "rigging": {},
