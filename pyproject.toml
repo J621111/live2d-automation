@@ -9,7 +9,7 @@ description = "Generate an intermediate Live2D package from a single character i
 readme = "README.md"
 license = { text = "MIT" }
 requires-python = ">=3.10"
-authors = [{ name = "Live2D Automation Team" }]
+authors = [{ name = "NyaaByte (J621111)" }]
 keywords = ["live2d", "mcp", "automation", "avatar", "animation"]
 classifiers = [
     "Development Status :: 3 - Alpha",
