@@ -92,7 +92,7 @@ extend-exclude = [
 select = ["E", "F", "W", "I", "N", "UP", "B", "A", "C4", "SIM"]
 
 [tool.ruff.lint.per-file-ignores]
-"mcp_server/secure_server_impl.py" = ["E402", "E501"]
+"mcp_server/secure_server_impl.py" = ["E501"]
 "mcp_server/tools/auto_rigger.py" = ["E501"]
 "mcp_server/tools/moc3_generator.py" = ["E501"]
 

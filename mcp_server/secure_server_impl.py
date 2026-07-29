@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 import os
-import sys
 from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
@@ -14,10 +13,6 @@ from fastmcp import FastMCP
 from loguru import logger
 from PIL import Image as PILImage
 from PIL import ImageFile, UnidentifiedImageError
-
-project_root = Path(__file__).resolve().parent.parent
-if str(project_root) not in sys.path:
-    sys.path.append(str(project_root))
 
 from mcp_server.pipeline_services import CubismPipelineService, ImagePipelineService
 from mcp_server.session_store import (
@@ -44,6 +39,8 @@ from mcp_server.validation import (
     validate_model_name as _shared_validate_model_name,
 )
 
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+
 mcp = FastMCP("live2d-automation")
 
 MAX_IMAGE_BYTES = 20 * 1024 * 1024
@@ -60,7 +57,7 @@ ImageFile.LOAD_TRUNCATED_IMAGES = False
 
 
 def _template_dirs() -> list[Path]:
-    return [project_root / "templates", project_root / "mcp_server" / "templates"]
+    return [PROJECT_ROOT / "templates", PROJECT_ROOT / "mcp_server" / "templates"]
 
 
 def _env_int(name: str, default: int, minimum: int = 1) -> int:
