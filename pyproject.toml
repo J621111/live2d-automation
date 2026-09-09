@@ -57,9 +57,9 @@ live2d-mcp = "mcp_server.server:main"
 live2d-run = "mcp_server.cli:main"
 
 [project.urls]
-Homepage = "https://github.com/live2d-automation/live2d-automation"
-Repository = "https://github.com/live2d-automation/live2d-automation"
-Issues = "https://github.com/live2d-automation/live2d-automation/issues"
+Homepage = "https://github.com/J621111/live2d-automation"
+Repository = "https://github.com/J621111/live2d-automation"
+Issues = "https://github.com/J621111/live2d-automation/issues"
 
 [tool.setuptools.packages.find]
 where = ["."]
