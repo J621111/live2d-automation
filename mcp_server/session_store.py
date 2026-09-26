@@ -37,6 +37,8 @@ def empty_session_state() -> dict[str, Any]:
         "layer_generation_metadata": {},
         "ai_parts": [],
         "ai_part_layers": [],
+        "layer_quality": {},
+        "correction_manifest_path": None,
         "cubism_template_mapping": {},
         "cubism_psd_path": None,
         "cubism_automation_plan": {},
