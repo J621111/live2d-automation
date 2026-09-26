@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from typing import Any, cast
 
@@ -76,6 +77,7 @@ class PartSegmenter:
         image_path: str,
         detected_parts: list[JsonDict],
         output_dir: str,
+        corrections: JsonDict | None = None,
     ) -> JsonDict:
         base_output = Path(output_dir)
         parts_dir = base_output / "ai_parts"
@@ -87,18 +89,50 @@ class PartSegmenter:
             rgba = np.array(image)
 
         layers: list[LayerAsset] = []
+        corrections = corrections or {}
         for payload in detected_parts:
             part = self._from_dict(payload)
+            correction = corrections.get(part.name)
+            if isinstance(correction, dict):
+                part = self._apply_correction(part, correction)
             layer = self._extract_layer(rgba, part, parts_dir, masks_dir)
             if layer is not None:
                 layers.append(layer)
 
         ordered = sorted(layers, key=lambda item: item.z_order)
+        quality = [dict(layer.metadata.get("mask_quality", {}), name=layer.name) for layer in ordered]
+        by_name = {layer.name: layer for layer in ordered}
+        for item in quality:
+            layer = by_name[item["name"]]
+            b = layer.bounds
+            for other in ordered:
+                if other.name == layer.name or other.group != layer.group:
+                    continue
+                ob = other.bounds
+                ix = max(0, min(b.x + b.width, ob.x + ob.width) - max(b.x, ob.x))
+                iy = max(0, min(b.y + b.height, ob.y + ob.height) - max(b.y, ob.y))
+                intersection = ix * iy
+                union = b.width * b.height + ob.width * ob.height - intersection
+                if union and intersection / union > 0.85:
+                    item.setdefault("reasons", []).append("severe_overlap")
+                    item["needs_review"] = True
+                    break
+        review_items = [item for item in quality if item.get("needs_review")]
+        correction_manifest = base_output / "correction_manifest.json"
+        correction_manifest.write_text(
+            json.dumps({"version": 1, "items": review_items}, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
         return {
             "status": "success",
             "layers": [layer.to_dict() for layer in ordered],
             "layers_generated": len(ordered),
             "output_dir": str(base_output),
+            "mask_quality": quality,
+            "quality_summary": {"total": len(quality), "high_quality": len(quality) - len(review_items), "low_quality": len(review_items)},
+            "needs_review": bool(review_items),
+            "review_items": review_items,
+            "correction_manifest_path": str(correction_manifest),
         }
 
     def _extract_layer(
@@ -117,9 +151,16 @@ class PartSegmenter:
         if np.count_nonzero(alpha) == 0:
             return None
 
-        polygon_mask = self._mask_from_polygon(part, crop.shape[1], crop.shape[0])
+        polygon_mask = self._mask_from_file(part, crop.shape[1], crop.shape[0])
+        if polygon_mask is None:
+            polygon_mask = self._mask_from_polygon(part, crop.shape[1], crop.shape[0])
         color_mask = self._foreground_mask(crop, part.name)
         mask = self._refine_mask(crop, part, polygon_mask, color_mask)
+        if "highlight" in part.name and np.count_nonzero(color_mask) >= 2:
+            mask = ((mask > 0) & (color_mask > 0)).astype(np.uint8)
+            bright = (crop[:, :, :3].mean(axis=2) >= 220).astype(np.uint8)
+            if np.count_nonzero(bright) >= 2:
+                mask = bright
         if np.count_nonzero(mask) == 0:
             mask = (alpha > 0).astype(np.uint8)
 
@@ -135,7 +176,13 @@ class PartSegmenter:
             part.name, min_x, max_x, min_y, max_y, crop.shape[1], crop.shape[0]
         )
         trimmed = crop[min_y:max_y, min_x:max_x].copy()
-        trimmed_mask: np.ndarray = mask[min_y:max_y, min_x:max_x] * 255
+        trimmed_binary = mask[min_y:max_y, min_x:max_x].astype(np.uint8)
+        trimmed_binary = cv2.morphologyEx(trimmed_binary, cv2.MORPH_CLOSE, np.ones((3, 3), np.uint8))
+        # 高光、虹膜等细小部件不能让羽化扩散到整个裁剪框。
+        if trimmed_binary.shape[0] <= 12 or trimmed_binary.shape[1] <= 12:
+            trimmed_mask = trimmed_binary * 255
+        else:
+            trimmed_mask = cv2.GaussianBlur(trimmed_binary * 255, (3, 3), 0)
         trimmed[:, :, 3] = trimmed_mask
 
         image_path = parts_dir / f"{part.name}.png"
@@ -159,8 +206,32 @@ class PartSegmenter:
             z_order=self._z_order.get(part.name, 80),
             confidence=part.confidence,
             detector=part.detector,
-            metadata={"occluded": part.occluded, "attributes": dict(part.attributes)},
+            metadata={"occluded": part.occluded, "attributes": dict(part.attributes), "mask_source": "model_mask" if part.mask_path else ("polygon" if part.polygon else "heuristic"), "mask_quality": self._assess_quality(part, mask, x, y, rgba.shape[1], rgba.shape[0])},
         )
+
+    def _assess_quality(self, part: DetectedPart, mask: np.ndarray, x: int, y: int, width: int, height: int) -> JsonDict:
+        area = int(np.count_nonzero(mask))
+        bbox_area = max(1, part.bbox.width * part.bbox.height)
+        ratio = area / bbox_area
+        touches_edge = part.bbox.x <= 0 or part.bbox.y <= 0 or part.bbox.x + part.bbox.width >= width or part.bbox.y + part.bbox.height >= height
+        reasons: list[str] = []
+        if not part.polygon and not part.mask_path: reasons.append("missing_polygon_or_mask")
+        if area == 0: reasons.append("empty_mask")
+        if ratio < 0.01 or ratio > 0.98: reasons.append("mask_area_mismatch")
+        if touches_edge: reasons.append("touches_image_boundary")
+        if part.occluded: reasons.append("occluded")
+        confidence = max(0.0, min(1.0, float(part.confidence)))
+        if confidence < 0.6: reasons.append("low_confidence")
+        return {"confidence": round(confidence, 3), "mask_area": area, "mask_area_ratio": round(ratio, 4), "bbox_area": bbox_area, "touches_image_boundary": touches_edge, "occluded": part.occluded, "mask_source": "model_mask" if part.mask_path else ("polygon" if part.polygon else "heuristic"), "needs_review": bool(reasons), "reasons": reasons}
+
+    def _apply_correction(self, part: DetectedPart, correction: JsonDict) -> DetectedPart:
+        bbox = correction.get("bbox")
+        if isinstance(bbox, dict):
+            part.bbox = BoundingBox(x=int(bbox.get("x", part.bbox.x)), y=int(bbox.get("y", part.bbox.y)), width=max(1, int(bbox.get("width", part.bbox.width))), height=max(1, int(bbox.get("height", part.bbox.height))))
+        polygon = correction.get("polygon")
+        if isinstance(polygon, list): part.polygon = [p for p in polygon if isinstance(p, dict) and "x" in p and "y" in p]
+        part.attributes = {**part.attributes, "correction": {k: v for k, v in correction.items() if k != "mask"}}
+        return part
 
     def _refine_mask(
         self,
@@ -235,6 +306,19 @@ class PartSegmenter:
         mask: np.ndarray = np.zeros((height, width), dtype=np.uint8)
         cv2.fillPoly(mask, [polygon], 1)
         return cast(np.ndarray, np.asarray(mask, dtype=np.uint8))
+
+    def _mask_from_file(self, part: DetectedPart, width: int, height: int) -> np.ndarray | None:
+        if not part.mask_path:
+            return None
+        path = Path(part.mask_path)
+        if not path.exists():
+            return None
+        try:
+            with Image.open(path).convert("L") as image:
+                resized = image.resize((width, height), Image.Resampling.BILINEAR)
+                return (np.asarray(resized) > 16).astype(np.uint8)
+        except (OSError, ValueError):
+            return None
 
     def _foreground_mask(self, crop: np.ndarray, part_name: str) -> np.ndarray:
         alpha = (crop[:, :, 3] > 0).astype(np.uint8)
@@ -361,6 +445,7 @@ class PartSegmenter:
             confidence=float(payload.get("confidence", 0.0)),
             detector=str(payload.get("detector", "unknown")),
             polygon=list(payload.get("polygon", [])),
+            mask_path=str(payload.get("mask_path")) if payload.get("mask_path") else None,
             occluded=bool(payload.get("occluded", False)),
             attributes=dict(payload.get("attributes", {})),
         )
