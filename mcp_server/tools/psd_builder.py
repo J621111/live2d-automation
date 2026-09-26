@@ -49,6 +49,31 @@ class CubismPSDBuilder:
             parent = group
         return parent
 
+    def _validate_layers(self, layers: list[JsonDict], mapping: JsonDict, canvas_size: tuple[int, int]) -> JsonDict:
+        errors: list[str] = []
+        names: set[str] = set()
+        width, height = canvas_size
+        for layer in layers:
+            name = str(layer.get("name", "layer"))
+            if name in names: errors.append(f"duplicate_layer:{name}")
+            names.add(name)
+            bounds = dict(layer.get("bounds", {}))
+            x, y = int(bounds.get("x", 0)), int(bounds.get("y", 0))
+            w, h = int(bounds.get("width", 0)), int(bounds.get("height", 0))
+            if w <= 0 or h <= 0 or x < 0 or y < 0 or x + w > width or y + h > height:
+                errors.append(f"invalid_bounds:{name}")
+            path = Path(str(layer.get("path", "")))
+            if not path.exists():
+                errors.append(f"missing_file:{name}")
+            else:
+                try:
+                    with Image.open(path).convert("RGBA") as image:
+                        if image.getchannel("A").getbbox() is None:
+                            errors.append(f"empty_alpha:{name}")
+                except Exception:
+                    errors.append(f"invalid_image:{name}")
+        return {"errors": errors, "valid": not errors, "missing_required": mapping.get("missing_required", [])}
+
     async def build(
         self,
         layers: list[JsonDict],
@@ -59,6 +84,7 @@ class CubismPSDBuilder:
         output_path = Path(output_dir)
         output_path.mkdir(parents=True, exist_ok=True)
         canvas_size = self._canvas_size(layers)
+        validation = self._validate_layers(layers, mapping, canvas_size)
         psd = PSDImage.new("RGBA", canvas_size, color=0)
         groups: dict[str, Any] = {}
 
@@ -128,8 +154,9 @@ class CubismPSDBuilder:
         with open(mapping_path, "w", encoding="utf-8") as handle:
             json.dump(mapping, handle, indent=2, ensure_ascii=False)
 
+        needs_review = any(dict(layer.get("metadata", {})).get("mask_quality", {}).get("needs_review") for layer in layers)
         return {
-            "status": "success" if not mapping.get("missing_required") else "partial",
+            "status": "error" if validation["errors"] else ("partial" if mapping.get("missing_required") else "success"),
             "psd_path": str(psd_path),
             "preview_path": str(preview_path),
             "manifest_path": str(manifest_path),
@@ -138,4 +165,7 @@ class CubismPSDBuilder:
             "template_id": mapping.get("template_id"),
             "missing_required": mapping.get("missing_required", []),
             "coverage": mapping.get("coverage", 0.0),
+            "needs_review": needs_review,
+            "validation_errors": validation["errors"],
+            "validation": validation,
         }
