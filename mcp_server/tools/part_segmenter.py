@@ -183,14 +183,20 @@ class PartSegmenter:
         )
         trimmed = crop[min_y:max_y, min_x:max_x].copy()
         trimmed_binary = mask[min_y:max_y, min_x:max_x].astype(np.uint8)
-        trimmed_binary = cv2.morphologyEx(
-            trimmed_binary, cv2.MORPH_CLOSE, np.ones((3, 3), np.uint8)
+        trimmed_binary = np.asarray(
+            cv2.morphologyEx(
+                trimmed_binary, cv2.MORPH_CLOSE, np.ones((3, 3), np.uint8)
+            ),
+            dtype=np.uint8,
         )
         # 高光、虹膜等细小部件不能让羽化扩散到整个裁剪框。
         if trimmed_binary.shape[0] <= 12 or trimmed_binary.shape[1] <= 12:
-            trimmed_mask = trimmed_binary * 255
+            trimmed_mask = np.asarray(trimmed_binary * 255, dtype=np.uint8)
         else:
-            trimmed_mask = cv2.GaussianBlur(trimmed_binary * 255, (3, 3), 0)
+            trimmed_mask = np.asarray(
+                cv2.GaussianBlur(trimmed_binary * 255, (3, 3), 0),
+                dtype=np.uint8,
+            )
         trimmed[:, :, 3] = trimmed_mask
 
         image_path = parts_dir / f"{part.name}.png"
