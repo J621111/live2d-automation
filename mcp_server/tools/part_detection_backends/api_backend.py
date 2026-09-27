@@ -304,6 +304,7 @@ class APIPartDetectionBackend(PartDetectionBackend):
                 confidence=float(item.get("confidence", 0.0)),
                 detector=str(item.get("detector", self.fallback_backend.detector_name)),
                 polygon=list(item.get("polygon", [])),
+                mask_path=str(item.get("mask_path")) if item.get("mask_path") else None,
                 occluded=bool(item.get("occluded", False)),
                 attributes=dict(item.get("attributes", {})),
             )

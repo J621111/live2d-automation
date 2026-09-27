@@ -26,6 +26,7 @@ class DetectedPart:
     confidence: float
     detector: str
     polygon: list[dict[str, int]] = field(default_factory=list)
+    mask_path: str | None = None
     occluded: bool = False
     attributes: dict[str, Any] = field(default_factory=dict)
 

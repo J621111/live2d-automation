@@ -132,7 +132,13 @@ class ImagePipelineService:
             "message": f"Detected {result.get('part_count', 0)} semantic parts.",
         }
 
-    async def segment_detected_parts(self, session_id: str, output_dir: Path) -> JsonDict:
+    async def segment_detected_parts(
+        self,
+        session_id: str,
+        output_dir: Path,
+        corrections: JsonDict | None = None,
+    ) -> JsonDict:
+        """Segment detected semantic parts and persist review metadata."""
         state = self._session_store.require_state_field(
             session_id,
             "ai_parts",
@@ -144,17 +150,31 @@ class ImagePipelineService:
             state["input_image"],
             state["ai_parts"],
             str(output_dir),
+            corrections,
         )
         state["ai_part_layers"] = result.get("layers", [])
+        state["layers"] = result.get("layers", [])
+        state["layer_quality"] = result.get("quality_summary", {})
+        state["correction_manifest_path"] = result.get("correction_manifest_path")
+        state["meshes"] = {}
+        state["rigging"] = {}
+        state["physics"] = {}
+        state["motions"] = []
         return {
             "status": "success",
             "session_id": session_id,
             "layers_generated": result.get("layers_generated", 0),
             "layers": result.get("layers", []),
+            "quality_summary": result.get("quality_summary", {}),
+            "needs_review": result.get("needs_review", False),
+            "review_items": result.get("review_items", []),
+            "mask_quality": result.get("mask_quality", []),
+            "correction_manifest_path": result.get("correction_manifest_path"),
             "message": f"Generated {result.get('layers_generated', 0)} AI-guided part layers.",
         }
 
     async def generate_layers(self, session_id: str, output_dir: Path) -> JsonDict:
+        """Generate semantic layers, falling back to heuristic extraction when needed."""
         state = self._session_store.require_state_field(
             session_id,
             "segments",
@@ -176,16 +196,22 @@ class ImagePipelineService:
             state["ai_parts"],
             str(output_dir),
         )
+        state["layer_quality"] = ai_layer_result.get("quality_summary", {})
+        state["correction_manifest_path"] = ai_layer_result.get("correction_manifest_path")
         ai_layers = ai_layer_result.get("layers", [])
         if ai_layers:
             state["ai_part_layers"] = ai_layers
             state["layers"] = ai_layers
+            state["layer_quality"] = ai_layer_result.get("quality_summary", {})
+            state["correction_manifest_path"] = ai_layer_result.get("correction_manifest_path")
             state["layer_generation_metadata"] = {
                 "backend_used": ai_result.get("backend_used"),
                 "detector_used": ai_result.get("detector_used"),
                 "fallback_reason": ai_result.get("fallback_reason"),
                 "confidence_summary": ai_result.get("confidence_summary"),
                 "source": "semantic_refine",
+                "quality_summary": ai_layer_result.get("quality_summary", {}),
+                "needs_review": ai_layer_result.get("needs_review", False),
             }
             return {
                 "status": "success",
@@ -198,6 +224,11 @@ class ImagePipelineService:
                 "fallback_reason": ai_result.get("fallback_reason"),
                 "confidence_summary": ai_result.get("confidence_summary"),
                 "face_detector_used": face_features.get("detector_used"),
+                "quality_summary": ai_layer_result.get("quality_summary", {}),
+                "needs_review": ai_layer_result.get("needs_review", False),
+                "review_items": ai_layer_result.get("review_items", []),
+                "mask_quality": ai_layer_result.get("mask_quality", []),
+                "correction_manifest_path": ai_layer_result.get("correction_manifest_path"),
                 "message": f"Generated {len(ai_layers)} AI-guided layers.",
             }
 
@@ -208,6 +239,14 @@ class ImagePipelineService:
             output_dir=str(output_dir),
         )
         state["layers"] = layers
+        fallback_quality = {
+            "total": len(layers),
+            "high_quality": 0,
+            "low_quality": len(layers),
+            "unassessed": len(layers),
+        }
+        state["layer_quality"] = fallback_quality
+        state["correction_manifest_path"] = None
         state["layer_generation_metadata"] = generator.last_generation_metadata
         return {
             "status": "success",
@@ -219,6 +258,8 @@ class ImagePipelineService:
             "fallback_reason": generator.last_generation_metadata.get("fallback_reason"),
             "confidence_summary": generator.last_generation_metadata.get("confidence_summary"),
             "face_detector_used": face_features.get("detector_used"),
+            "quality_summary": fallback_quality,
+            "needs_review": bool(layers),
             "message": f"Generated {len(layers)} layers.",
         }
 
@@ -369,12 +410,23 @@ class CubismPipelineService:
             "mapping_path": result.get("mapping_path"),
             "coverage": result.get("coverage", 0.0),
             "missing_required": result.get("missing_required", []),
+            "needs_review": result.get("needs_review", False),
+            "validation_errors": result.get("validation_errors", []),
+            "validation": result.get("validation", {}),
             "message": (
-                f"Built Cubism PSD package for template '{template_id}'."
-                if not result.get("missing_required")
+                (
+                    f"Built Cubism PSD package for template '{template_id}'."
+                    + (
+                        " Manual review is recommended for low-quality layers."
+                        if result.get("needs_review")
+                        else ""
+                    )
+                )
+                if result.get("status") == "success"
                 else (
-                    "Built Cubism PSD package with missing required parts: "
-                    f"{result.get('missing_required', [])}."
+                    "PSD package requires review: "
+                    f"missing={result.get('missing_required', [])}, "
+                    f"errors={result.get('validation_errors', [])}."
                 )
             ),
         }
