@@ -404,7 +404,8 @@ class CubismPipelineService:
                 if result.get("status") == "success"
                 else (
                     "PSD package requires review: "
-                    f"missing={result.get('missing_required', [])}, errors={result.get('validation_errors', [])}."
+                    f"missing={result.get('missing_required', [])}, "
+                    f"errors={result.get('validation_errors', [])}."
                 )
             ),
         }
