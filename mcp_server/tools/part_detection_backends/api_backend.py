@@ -275,7 +275,6 @@ class APIPartDetectionBackend(PartDetectionBackend):
                     confidence=float(item.get("confidence", 0.8)),
                     detector=self.detector_name,
                     polygon=polygon,
-                    mask_path=str(item.get("mask_path")) if item.get("mask_path") else None,
                     attributes={"source": "api_backend", "refined": True},
                 )
             )

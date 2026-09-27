@@ -73,6 +73,8 @@ class CubismPSDBuilder:
                     with Image.open(path).convert("RGBA") as image:
                         if image.getchannel("A").getbbox() is None:
                             errors.append(f"empty_alpha:{name}")
+                        if image.size[0] > w or image.size[1] > h:
+                            errors.append(f"image_exceeds_bounds:{name}")
                 except Exception:
                     errors.append(f"invalid_image:{name}")
         return {
@@ -92,6 +94,21 @@ class CubismPSDBuilder:
         output_path.mkdir(parents=True, exist_ok=True)
         canvas_size = self._canvas_size(layers)
         validation = self._validate_layers(layers, mapping, canvas_size)
+        if validation["errors"]:
+            return {
+                "status": "error",
+                "psd_path": None,
+                "preview_path": None,
+                "manifest_path": None,
+                "mapping_path": None,
+                "layers_written": 0,
+                "template_id": mapping.get("template_id"),
+                "missing_required": mapping.get("missing_required", []),
+                "coverage": mapping.get("coverage", 0.0),
+                "needs_review": True,
+                "validation_errors": validation["errors"],
+                "validation": validation,
+            }
         psd = PSDImage.new("RGBA", canvas_size, color=0)
         groups: dict[str, Any] = {}
 

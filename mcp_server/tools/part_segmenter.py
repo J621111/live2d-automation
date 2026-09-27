@@ -90,6 +90,7 @@ class PartSegmenter:
 
         layers: list[LayerAsset] = []
         corrections = corrections or {}
+        review_items: list[JsonDict] = []
         for payload in detected_parts:
             part = self._from_dict(payload)
             correction = corrections.get(part.name)
@@ -98,6 +99,15 @@ class PartSegmenter:
             layer = self._extract_layer(rgba, part, parts_dir, masks_dir)
             if layer is not None:
                 layers.append(layer)
+            else:
+                review_items.append(
+                    {
+                        "name": part.name,
+                        "needs_review": True,
+                        "reasons": ["layer_extraction_failed"],
+                        "confidence": round(max(0.0, min(1.0, part.confidence)), 3),
+                    }
+                )
 
         ordered = sorted(layers, key=lambda item: item.z_order)
         quality = [
@@ -119,7 +129,7 @@ class PartSegmenter:
                     item.setdefault("reasons", []).append("severe_overlap")
                     item["needs_review"] = True
                     break
-        review_items = [item for item in quality if item.get("needs_review")]
+        review_items.extend(item for item in quality if item.get("needs_review"))
         correction_manifest = base_output / "correction_manifest.json"
         correction_manifest.write_text(
             json.dumps({"version": 1, "items": review_items}, ensure_ascii=False, indent=2),
@@ -157,16 +167,22 @@ class PartSegmenter:
         if np.count_nonzero(alpha) == 0:
             return None
 
+        mask_source = "heuristic"
         polygon_mask = self._mask_from_file(part, crop.shape[1], crop.shape[0])
+        if polygon_mask is not None:
+            mask_source = "model_mask"
         if polygon_mask is None:
             polygon_mask = self._mask_from_polygon(part, crop.shape[1], crop.shape[0])
+            if polygon_mask is not None:
+                mask_source = "polygon"
         color_mask = self._foreground_mask(crop, part.name)
         mask = self._refine_mask(crop, part, polygon_mask, color_mask)
-        if "highlight" in part.name and np.count_nonzero(color_mask) >= 2:
-            mask = ((mask > 0) & (color_mask > 0)).astype(np.uint8)
-            bright = (crop[:, :, :3].mean(axis=2) >= 220).astype(np.uint8)
-            if np.count_nonzero(bright) >= 2:
-                mask = bright
+        if "highlight" in part.name:
+            mask = ((mask > 0) & (color_mask > 0) & (alpha > 0)).astype(np.uint8)
+            bright = (crop[:, :, :3].mean(axis=2) >= 240).astype(np.uint8)
+            bright_mask = (bright > 0) & (mask > 0) & (alpha > 0)
+            if np.count_nonzero(bright_mask) >= 2:
+                mask = bright_mask.astype(np.uint8)
         if np.count_nonzero(mask) == 0:
             mask = (alpha > 0).astype(np.uint8)
 
@@ -195,6 +211,9 @@ class PartSegmenter:
                 cv2.GaussianBlur(trimmed_binary * 255, (3, 3), 0),
                 dtype=np.uint8,
             )
+        if "highlight" in part.name:
+            bright_pixels = trimmed[:, :, :3].mean(axis=2) >= 235
+            trimmed_mask = np.where(bright_pixels, trimmed_mask, 0).astype(np.uint8)
         trimmed[:, :, 3] = trimmed_mask
 
         image_path = parts_dir / f"{part.name}.png"
@@ -221,17 +240,22 @@ class PartSegmenter:
             metadata={
                 "occluded": part.occluded,
                 "attributes": dict(part.attributes),
-                "mask_source": (
-                    "model_mask" if part.mask_path else ("polygon" if part.polygon else "heuristic")
-                ),
+                "mask_source": mask_source,
                 "mask_quality": self._assess_quality(
-                    part, mask, x, y, rgba.shape[1], rgba.shape[0]
+                    part, mask, mask_source, x, y, rgba.shape[1], rgba.shape[0]
                 ),
             },
         )
 
     def _assess_quality(
-        self, part: DetectedPart, mask: np.ndarray, x: int, y: int, width: int, height: int
+        self,
+        part: DetectedPart,
+        mask: np.ndarray,
+        mask_source: str,
+        x: int,
+        y: int,
+        width: int,
+        height: int,
     ) -> JsonDict:
         area = int(np.count_nonzero(mask))
         bbox_area = max(1, part.bbox.width * part.bbox.height)
@@ -243,7 +267,7 @@ class PartSegmenter:
             or part.bbox.y + part.bbox.height >= height
         )
         reasons: list[str] = []
-        if not part.polygon and not part.mask_path:
+        if mask_source == "heuristic":
             reasons.append("missing_polygon_or_mask")
         if area == 0:
             reasons.append("empty_mask")
@@ -263,9 +287,7 @@ class PartSegmenter:
             "bbox_area": bbox_area,
             "touches_image_boundary": touches_edge,
             "occluded": part.occluded,
-            "mask_source": (
-                "model_mask" if part.mask_path else ("polygon" if part.polygon else "heuristic")
-            ),
+            "mask_source": mask_source,
             "needs_review": bool(reasons),
             "reasons": reasons,
         }
@@ -282,6 +304,7 @@ class PartSegmenter:
         polygon = correction.get("polygon")
         if isinstance(polygon, list):
             part.polygon = [p for p in polygon if isinstance(p, dict) and "x" in p and "y" in p]
+            part.mask_path = None
         part.attributes = {
             **part.attributes,
             "correction": {k: v for k, v in correction.items() if k != "mask"},

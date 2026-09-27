@@ -132,7 +132,12 @@ class ImagePipelineService:
             "message": f"Detected {result.get('part_count', 0)} semantic parts.",
         }
 
-    async def segment_detected_parts(self, session_id: str, output_dir: Path) -> JsonDict:
+    async def segment_detected_parts(
+        self,
+        session_id: str,
+        output_dir: Path,
+        corrections: JsonDict | None = None,
+    ) -> JsonDict:
         state = self._session_store.require_state_field(
             session_id,
             "ai_parts",
@@ -144,6 +149,7 @@ class ImagePipelineService:
             state["input_image"],
             state["ai_parts"],
             str(output_dir),
+            corrections,
         )
         state["ai_part_layers"] = result.get("layers", [])
         state["layer_quality"] = result.get("quality_summary", {})
@@ -183,6 +189,8 @@ class ImagePipelineService:
             state["ai_parts"],
             str(output_dir),
         )
+        state["layer_quality"] = ai_layer_result.get("quality_summary", {})
+        state["correction_manifest_path"] = ai_layer_result.get("correction_manifest_path")
         ai_layers = ai_layer_result.get("layers", [])
         if ai_layers:
             state["ai_part_layers"] = ai_layers
@@ -222,6 +230,12 @@ class ImagePipelineService:
             output_dir=str(output_dir),
         )
         state["layers"] = layers
+        fallback_quality = {
+            "total": len(layers),
+            "high_quality": 0,
+            "low_quality": len(layers),
+            "unassessed": len(layers),
+        }
         state["layer_generation_metadata"] = generator.last_generation_metadata
         return {
             "status": "success",
@@ -233,12 +247,8 @@ class ImagePipelineService:
             "fallback_reason": generator.last_generation_metadata.get("fallback_reason"),
             "confidence_summary": generator.last_generation_metadata.get("confidence_summary"),
             "face_detector_used": face_features.get("detector_used"),
-            "quality_summary": {
-                "total": len(layers),
-                "high_quality": len(layers),
-                "low_quality": 0,
-            },
-            "needs_review": False,
+            "quality_summary": fallback_quality,
+            "needs_review": bool(layers),
             "message": f"Generated {len(layers)} layers.",
         }
 

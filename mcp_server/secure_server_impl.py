@@ -270,8 +270,12 @@ async def _analyze_parts_with_ai_impl(image_path: Path, session_id: str) -> dict
     return await _image_pipeline_service.analyze_parts_with_ai(image_path, session_id)
 
 
-async def _segment_detected_parts_impl(session_id: str, output_dir: Path) -> dict[str, Any]:
-    return await _image_pipeline_service.segment_detected_parts(session_id, output_dir)
+async def _segment_detected_parts_impl(
+    session_id: str,
+    output_dir: Path,
+    corrections: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    return await _image_pipeline_service.segment_detected_parts(session_id, output_dir, corrections)
 
 
 async def _build_cubism_psd_impl(
@@ -395,11 +399,15 @@ async def analyze_photo(image_path: str) -> dict[str, Any]:
 
 
 @mcp.tool()
-async def segment_detected_parts(session_id: str, output_dir: str) -> dict[str, Any]:
+async def segment_detected_parts(
+    session_id: str,
+    output_dir: str,
+    corrections: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     try:
         resolved_output_dir = _resolve_output_dir(output_dir)
         with _session_operation(session_id):
-            return await _segment_detected_parts_impl(session_id, resolved_output_dir)
+            return await _segment_detected_parts_impl(session_id, resolved_output_dir, corrections)
     except InputValidationError as exc:
         logger.warning(f"Validation error in segment_detected_parts for {session_id}: {exc}")
         return _build_error_payload(
