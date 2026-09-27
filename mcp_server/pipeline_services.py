@@ -138,6 +138,7 @@ class ImagePipelineService:
         output_dir: Path,
         corrections: JsonDict | None = None,
     ) -> JsonDict:
+        """Segment detected semantic parts and persist review metadata."""
         state = self._session_store.require_state_field(
             session_id,
             "ai_parts",
@@ -152,8 +153,13 @@ class ImagePipelineService:
             corrections,
         )
         state["ai_part_layers"] = result.get("layers", [])
+        state["layers"] = result.get("layers", [])
         state["layer_quality"] = result.get("quality_summary", {})
         state["correction_manifest_path"] = result.get("correction_manifest_path")
+        state["meshes"] = {}
+        state["rigging"] = {}
+        state["physics"] = {}
+        state["motions"] = []
         return {
             "status": "success",
             "session_id": session_id,
@@ -168,6 +174,7 @@ class ImagePipelineService:
         }
 
     async def generate_layers(self, session_id: str, output_dir: Path) -> JsonDict:
+        """Generate semantic layers, falling back to heuristic extraction when needed."""
         state = self._session_store.require_state_field(
             session_id,
             "segments",
@@ -195,6 +202,8 @@ class ImagePipelineService:
         if ai_layers:
             state["ai_part_layers"] = ai_layers
             state["layers"] = ai_layers
+            state["layer_quality"] = ai_layer_result.get("quality_summary", {})
+            state["correction_manifest_path"] = ai_layer_result.get("correction_manifest_path")
             state["layer_generation_metadata"] = {
                 "backend_used": ai_result.get("backend_used"),
                 "detector_used": ai_result.get("detector_used"),
@@ -236,6 +245,8 @@ class ImagePipelineService:
             "low_quality": len(layers),
             "unassessed": len(layers),
         }
+        state["layer_quality"] = fallback_quality
+        state["correction_manifest_path"] = None
         state["layer_generation_metadata"] = generator.last_generation_metadata
         return {
             "status": "success",

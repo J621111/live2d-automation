@@ -79,6 +79,7 @@ class PartSegmenter:
         output_dir: str,
         corrections: JsonDict | None = None,
     ) -> JsonDict:
+        """Extract transparent layers and write quality/review artifacts."""
         base_output = Path(output_dir)
         parts_dir = base_output / "ai_parts"
         masks_dir = base_output / "ai_masks"
@@ -91,6 +92,7 @@ class PartSegmenter:
         layers: list[LayerAsset] = []
         corrections = corrections or {}
         review_items: list[JsonDict] = []
+        failed_count = 0
         for payload in detected_parts:
             part = self._from_dict(payload)
             correction = corrections.get(part.name)
@@ -100,6 +102,7 @@ class PartSegmenter:
             if layer is not None:
                 layers.append(layer)
             else:
+                failed_count += 1
                 review_items.append(
                     {
                         "name": part.name,
@@ -130,6 +133,7 @@ class PartSegmenter:
                     item["needs_review"] = True
                     break
         review_items.extend(item for item in quality if item.get("needs_review"))
+        high_quality = sum(1 for item in quality if not item.get("needs_review"))
         correction_manifest = base_output / "correction_manifest.json"
         correction_manifest.write_text(
             json.dumps({"version": 1, "items": review_items}, ensure_ascii=False, indent=2),
@@ -142,8 +146,8 @@ class PartSegmenter:
             "output_dir": str(base_output),
             "mask_quality": quality,
             "quality_summary": {
-                "total": len(quality),
-                "high_quality": len(quality) - len(review_items),
+                "total": len(quality) + failed_count,
+                "high_quality": high_quality,
                 "low_quality": len(review_items),
             },
             "needs_review": bool(review_items),
@@ -158,6 +162,7 @@ class PartSegmenter:
         parts_dir: Path,
         masks_dir: Path,
     ) -> LayerAsset | None:
+        """Extract one corrected part into an alpha-isolated layer asset."""
         x, y, w, h = part.bbox.x, part.bbox.y, part.bbox.width, part.bbox.height
         crop = rgba[y : y + h, x : x + w]
         if crop.size == 0:
@@ -214,6 +219,8 @@ class PartSegmenter:
         if "highlight" in part.name:
             bright_pixels = trimmed[:, :, :3].mean(axis=2) >= 235
             trimmed_mask = np.where(bright_pixels, trimmed_mask, 0).astype(np.uint8)
+            if np.count_nonzero(trimmed_mask) == 0:
+                return None
         trimmed[:, :, 3] = trimmed_mask
 
         image_path = parts_dir / f"{part.name}.png"
@@ -242,7 +249,13 @@ class PartSegmenter:
                 "attributes": dict(part.attributes),
                 "mask_source": mask_source,
                 "mask_quality": self._assess_quality(
-                    part, mask, mask_source, x, y, rgba.shape[1], rgba.shape[0]
+                    part,
+                    (trimmed_mask > 0).astype(np.uint8),
+                    mask_source,
+                    x,
+                    y,
+                    rgba.shape[1],
+                    rgba.shape[0],
                 ),
             },
         )
@@ -257,6 +270,7 @@ class PartSegmenter:
         width: int,
         height: int,
     ) -> JsonDict:
+        """Assess mask coverage, confidence, boundaries, and review conditions."""
         area = int(np.count_nonzero(mask))
         bbox_area = max(1, part.bbox.width * part.bbox.height)
         ratio = area / bbox_area
@@ -293,6 +307,7 @@ class PartSegmenter:
         }
 
     def _apply_correction(self, part: DetectedPart, correction: JsonDict) -> DetectedPart:
+        """Apply persisted bbox or polygon corrections to a detected part."""
         bbox = correction.get("bbox")
         if isinstance(bbox, dict):
             part.bbox = BoundingBox(
@@ -386,6 +401,7 @@ class PartSegmenter:
         return cast(np.ndarray, np.asarray(mask, dtype=np.uint8))
 
     def _mask_from_file(self, part: DetectedPart, width: int, height: int) -> np.ndarray | None:
+        """Load a local model mask and resize it to the detected crop."""
         if not part.mask_path:
             return None
         path = Path(part.mask_path)

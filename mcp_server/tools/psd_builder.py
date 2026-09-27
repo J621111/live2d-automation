@@ -52,6 +52,7 @@ class CubismPSDBuilder:
     def _validate_layers(
         self, layers: list[JsonDict], mapping: JsonDict, canvas_size: tuple[int, int]
     ) -> JsonDict:
+        """Validate layer files, alpha channels, bounds, and duplicate names."""
         errors: list[str] = []
         names: set[str] = set()
         width, height = canvas_size
@@ -90,6 +91,7 @@ class CubismPSDBuilder:
         output_dir: str,
         model_name: str,
     ) -> JsonDict:
+        """Build a PSD package after validation and return artifact metadata."""
         output_path = Path(output_dir)
         output_path.mkdir(parents=True, exist_ok=True)
         canvas_size = self._canvas_size(layers)
