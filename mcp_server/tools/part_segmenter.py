@@ -184,9 +184,7 @@ class PartSegmenter:
         trimmed = crop[min_y:max_y, min_x:max_x].copy()
         trimmed_binary = mask[min_y:max_y, min_x:max_x].astype(np.uint8)
         trimmed_binary = np.asarray(
-            cv2.morphologyEx(
-                trimmed_binary, cv2.MORPH_CLOSE, np.ones((3, 3), np.uint8)
-            ),
+            cv2.morphologyEx(trimmed_binary, cv2.MORPH_CLOSE, np.ones((3, 3), np.uint8)),
             dtype=np.uint8,
         )
         # 高光、虹膜等细小部件不能让羽化扩散到整个裁剪框。
