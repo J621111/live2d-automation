@@ -100,7 +100,9 @@ class PartSegmenter:
                 layers.append(layer)
 
         ordered = sorted(layers, key=lambda item: item.z_order)
-        quality = [dict(layer.metadata.get("mask_quality", {}), name=layer.name) for layer in ordered]
+        quality = [
+            dict(layer.metadata.get("mask_quality", {}), name=layer.name) for layer in ordered
+        ]
         by_name = {layer.name: layer for layer in ordered}
         for item in quality:
             layer = by_name[item["name"]]
@@ -129,7 +131,11 @@ class PartSegmenter:
             "layers_generated": len(ordered),
             "output_dir": str(base_output),
             "mask_quality": quality,
-            "quality_summary": {"total": len(quality), "high_quality": len(quality) - len(review_items), "low_quality": len(review_items)},
+            "quality_summary": {
+                "total": len(quality),
+                "high_quality": len(quality) - len(review_items),
+                "low_quality": len(review_items),
+            },
             "needs_review": bool(review_items),
             "review_items": review_items,
             "correction_manifest_path": str(correction_manifest),
@@ -177,7 +183,9 @@ class PartSegmenter:
         )
         trimmed = crop[min_y:max_y, min_x:max_x].copy()
         trimmed_binary = mask[min_y:max_y, min_x:max_x].astype(np.uint8)
-        trimmed_binary = cv2.morphologyEx(trimmed_binary, cv2.MORPH_CLOSE, np.ones((3, 3), np.uint8))
+        trimmed_binary = cv2.morphologyEx(
+            trimmed_binary, cv2.MORPH_CLOSE, np.ones((3, 3), np.uint8)
+        )
         # 高光、虹膜等细小部件不能让羽化扩散到整个裁剪框。
         if trimmed_binary.shape[0] <= 12 or trimmed_binary.shape[1] <= 12:
             trimmed_mask = trimmed_binary * 255
@@ -206,31 +214,74 @@ class PartSegmenter:
             z_order=self._z_order.get(part.name, 80),
             confidence=part.confidence,
             detector=part.detector,
-            metadata={"occluded": part.occluded, "attributes": dict(part.attributes), "mask_source": "model_mask" if part.mask_path else ("polygon" if part.polygon else "heuristic"), "mask_quality": self._assess_quality(part, mask, x, y, rgba.shape[1], rgba.shape[0])},
+            metadata={
+                "occluded": part.occluded,
+                "attributes": dict(part.attributes),
+                "mask_source": (
+                    "model_mask" if part.mask_path else ("polygon" if part.polygon else "heuristic")
+                ),
+                "mask_quality": self._assess_quality(
+                    part, mask, x, y, rgba.shape[1], rgba.shape[0]
+                ),
+            },
         )
 
-    def _assess_quality(self, part: DetectedPart, mask: np.ndarray, x: int, y: int, width: int, height: int) -> JsonDict:
+    def _assess_quality(
+        self, part: DetectedPart, mask: np.ndarray, x: int, y: int, width: int, height: int
+    ) -> JsonDict:
         area = int(np.count_nonzero(mask))
         bbox_area = max(1, part.bbox.width * part.bbox.height)
         ratio = area / bbox_area
-        touches_edge = part.bbox.x <= 0 or part.bbox.y <= 0 or part.bbox.x + part.bbox.width >= width or part.bbox.y + part.bbox.height >= height
+        touches_edge = (
+            part.bbox.x <= 0
+            or part.bbox.y <= 0
+            or part.bbox.x + part.bbox.width >= width
+            or part.bbox.y + part.bbox.height >= height
+        )
         reasons: list[str] = []
-        if not part.polygon and not part.mask_path: reasons.append("missing_polygon_or_mask")
-        if area == 0: reasons.append("empty_mask")
-        if ratio < 0.01 or ratio > 0.98: reasons.append("mask_area_mismatch")
-        if touches_edge: reasons.append("touches_image_boundary")
-        if part.occluded: reasons.append("occluded")
+        if not part.polygon and not part.mask_path:
+            reasons.append("missing_polygon_or_mask")
+        if area == 0:
+            reasons.append("empty_mask")
+        if ratio < 0.01 or ratio > 0.98:
+            reasons.append("mask_area_mismatch")
+        if touches_edge:
+            reasons.append("touches_image_boundary")
+        if part.occluded:
+            reasons.append("occluded")
         confidence = max(0.0, min(1.0, float(part.confidence)))
-        if confidence < 0.6: reasons.append("low_confidence")
-        return {"confidence": round(confidence, 3), "mask_area": area, "mask_area_ratio": round(ratio, 4), "bbox_area": bbox_area, "touches_image_boundary": touches_edge, "occluded": part.occluded, "mask_source": "model_mask" if part.mask_path else ("polygon" if part.polygon else "heuristic"), "needs_review": bool(reasons), "reasons": reasons}
+        if confidence < 0.6:
+            reasons.append("low_confidence")
+        return {
+            "confidence": round(confidence, 3),
+            "mask_area": area,
+            "mask_area_ratio": round(ratio, 4),
+            "bbox_area": bbox_area,
+            "touches_image_boundary": touches_edge,
+            "occluded": part.occluded,
+            "mask_source": (
+                "model_mask" if part.mask_path else ("polygon" if part.polygon else "heuristic")
+            ),
+            "needs_review": bool(reasons),
+            "reasons": reasons,
+        }
 
     def _apply_correction(self, part: DetectedPart, correction: JsonDict) -> DetectedPart:
         bbox = correction.get("bbox")
         if isinstance(bbox, dict):
-            part.bbox = BoundingBox(x=int(bbox.get("x", part.bbox.x)), y=int(bbox.get("y", part.bbox.y)), width=max(1, int(bbox.get("width", part.bbox.width))), height=max(1, int(bbox.get("height", part.bbox.height))))
+            part.bbox = BoundingBox(
+                x=int(bbox.get("x", part.bbox.x)),
+                y=int(bbox.get("y", part.bbox.y)),
+                width=max(1, int(bbox.get("width", part.bbox.width))),
+                height=max(1, int(bbox.get("height", part.bbox.height))),
+            )
         polygon = correction.get("polygon")
-        if isinstance(polygon, list): part.polygon = [p for p in polygon if isinstance(p, dict) and "x" in p and "y" in p]
-        part.attributes = {**part.attributes, "correction": {k: v for k, v in correction.items() if k != "mask"}}
+        if isinstance(polygon, list):
+            part.polygon = [p for p in polygon if isinstance(p, dict) and "x" in p and "y" in p]
+        part.attributes = {
+            **part.attributes,
+            "correction": {k: v for k, v in correction.items() if k != "mask"},
+        }
         return part
 
     def _refine_mask(

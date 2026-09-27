@@ -49,13 +49,16 @@ class CubismPSDBuilder:
             parent = group
         return parent
 
-    def _validate_layers(self, layers: list[JsonDict], mapping: JsonDict, canvas_size: tuple[int, int]) -> JsonDict:
+    def _validate_layers(
+        self, layers: list[JsonDict], mapping: JsonDict, canvas_size: tuple[int, int]
+    ) -> JsonDict:
         errors: list[str] = []
         names: set[str] = set()
         width, height = canvas_size
         for layer in layers:
             name = str(layer.get("name", "layer"))
-            if name in names: errors.append(f"duplicate_layer:{name}")
+            if name in names:
+                errors.append(f"duplicate_layer:{name}")
             names.add(name)
             bounds = dict(layer.get("bounds", {}))
             x, y = int(bounds.get("x", 0)), int(bounds.get("y", 0))
@@ -72,7 +75,11 @@ class CubismPSDBuilder:
                             errors.append(f"empty_alpha:{name}")
                 except Exception:
                     errors.append(f"invalid_image:{name}")
-        return {"errors": errors, "valid": not errors, "missing_required": mapping.get("missing_required", [])}
+        return {
+            "errors": errors,
+            "valid": not errors,
+            "missing_required": mapping.get("missing_required", []),
+        }
 
     async def build(
         self,
@@ -154,9 +161,16 @@ class CubismPSDBuilder:
         with open(mapping_path, "w", encoding="utf-8") as handle:
             json.dump(mapping, handle, indent=2, ensure_ascii=False)
 
-        needs_review = any(dict(layer.get("metadata", {})).get("mask_quality", {}).get("needs_review") for layer in layers)
+        needs_review = any(
+            dict(layer.get("metadata", {})).get("mask_quality", {}).get("needs_review")
+            for layer in layers
+        )
         return {
-            "status": "error" if validation["errors"] else ("partial" if mapping.get("missing_required") else "success"),
+            "status": (
+                "error"
+                if validation["errors"]
+                else ("partial" if mapping.get("missing_required") else "success")
+            ),
             "psd_path": str(psd_path),
             "preview_path": str(preview_path),
             "manifest_path": str(manifest_path),

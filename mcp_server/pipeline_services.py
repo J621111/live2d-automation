@@ -233,7 +233,11 @@ class ImagePipelineService:
             "fallback_reason": generator.last_generation_metadata.get("fallback_reason"),
             "confidence_summary": generator.last_generation_metadata.get("confidence_summary"),
             "face_detector_used": face_features.get("detector_used"),
-            "quality_summary": {"total": len(layers), "high_quality": len(layers), "low_quality": 0},
+            "quality_summary": {
+                "total": len(layers),
+                "high_quality": len(layers),
+                "low_quality": 0,
+            },
             "needs_review": False,
             "message": f"Generated {len(layers)} layers.",
         }
@@ -389,8 +393,14 @@ class CubismPipelineService:
             "validation_errors": result.get("validation_errors", []),
             "validation": result.get("validation", {}),
             "message": (
-                (f"Built Cubism PSD package for template '{template_id}'."
-                 + (" Manual review is recommended for low-quality layers." if result.get("needs_review") else ""))
+                (
+                    f"Built Cubism PSD package for template '{template_id}'."
+                    + (
+                        " Manual review is recommended for low-quality layers."
+                        if result.get("needs_review")
+                        else ""
+                    )
+                )
                 if result.get("status") == "success"
                 else (
                     "PSD package requires review: "
