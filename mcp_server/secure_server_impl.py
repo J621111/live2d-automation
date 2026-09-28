@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 from collections.abc import Iterator
@@ -21,6 +22,7 @@ from mcp_server.session_store import (
     SessionRemovalReason,
     empty_session_state,
 )
+from mcp_server.tools.cubism_editor_api import CubismEditorAPI
 from mcp_server.tools.template_mapper import TemplateMapper
 from mcp_server.validation import (
     OUTPUT_ROOT,
@@ -549,6 +551,99 @@ async def resume_cubism_dispatch(session_id: str) -> dict[str, Any]:
             session_id=session_id,
             partial_outputs=_partial_outputs(session_id),
         )
+
+
+def _macos_controller():
+    from mcp_server.tools.macos_cubism_controller import MacOSCubismController
+
+    return MacOSCubismController()
+
+
+def _guarded_editor_action(expected_document: str, payload: dict[str, Any]) -> dict[str, Any]:
+    from mcp_server.tools.cubism_swing import guarded_action
+
+    return guarded_action(expected_document, payload)
+
+
+def _editor_error(error: Exception) -> dict[str, Any]:
+    # External transport exceptions can contain permission tokens or request data.
+    if isinstance(error, PermissionError):
+        details = "Cubism permission is unavailable; approve the application in the editor."
+    elif isinstance(error, ValueError):
+        details = "Invalid Cubism request or unexpected active document."
+    else:
+        details = (
+            "Cubism editor access is unavailable. Check the local editor, "
+            "optional macos-cubism dependencies and bridge connection."
+        )
+    return {"status": "error", "details": details}
+
+
+@mcp.tool()
+async def cubism_editor_status() -> dict[str, Any]:
+    """Inspect the active macOS Cubism Editor document without modifying it."""
+    try:
+        return await asyncio.to_thread(lambda: _macos_controller().status())
+    except Exception as exc:
+        return _editor_error(exc)
+
+
+@mcp.tool()
+async def cubism_editor_open_menu(action: str, expected_document: str) -> dict[str, Any]:
+    """Open a supported menu only for the exact current Cubism document."""
+    try:
+        return await asyncio.to_thread(
+            lambda: _macos_controller().open_menu(action, expected_document)
+        )
+    except Exception as exc:
+        return _editor_error(exc)
+
+
+@mcp.tool()
+async def cubism_editor_widgets(expected_document: str) -> dict[str, Any]:
+    """Inspect attached Swing widgets behind the document and modal guard."""
+    try:
+        return await asyncio.to_thread(
+            _guarded_editor_action, expected_document, {"action": "snapshot"}
+        )
+    except Exception as exc:
+        return _editor_error(exc)
+
+
+@mcp.tool()
+async def cubism_editor_widget_action(
+    expected_document: str, action: dict[str, Any]
+) -> dict[str, Any]:
+    """Operate a current editor widget while preserving document and modal boundaries."""
+    try:
+        return await asyncio.to_thread(_guarded_editor_action, expected_document, action)
+    except Exception as exc:
+        return _editor_error(exc)
+
+
+@mcp.tool()
+async def cubism_editor_parameters(expected_document: str) -> dict[str, Any]:
+    """List parameter ranges and keyforms using an approved local editor connection."""
+    try:
+        async with CubismEditorAPI(expected_document) as editor:
+            parameters = await editor.parameters()
+        return {
+            "status": "success",
+            "document": expected_document,
+            "parameters": [
+                {
+                    "id": parameter["Id"],
+                    "name": parameter.get("Name", parameter["Id"]),
+                    "min": parameter["Min"],
+                    "default": parameter["Default"],
+                    "max": parameter["Max"],
+                    "keyforms": [key["Value"] for key in parameter.get("Keyform", [])],
+                }
+                for parameter in parameters
+            ],
+        }
+    except Exception as exc:
+        return _editor_error(exc)
 
 
 @mcp.tool()

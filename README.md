@@ -1,14 +1,18 @@
-﻿# Live2D Automation MCP Server
+# Live2D Automation MCP Server
 
-Generate a mock intermediate Live2D package from a single character image.
+Generate a mock intermediate Live2D package from a single character image, or operate an installed Cubism Editor through optional macOS authoring tools.
 
 ## Features
 
 - MCP tools for image analysis, face extraction, layer generation, rigging, physics, motions, and export
 - Server-issued session IDs with TTL, concurrency limits, explicit close support, and status metrics
-- Output directory confinement under `output/`
+- Image pipeline output directory confinement under `output/`
 - Mock `.moc3` export contract validated before success is reported
 - Explicit `detector_used`, `fallback_reason`, and `confidence_summary` metadata on analysis steps
+
+- Optional macOS editor bridge: guarded widgets, authenticated parameters, native exports, and export comparisons
+
+See [macOS Cubism authoring](docs/macos_cubism.md) for installation, approval, commands and verification limits.
 
 ## Installation
 
@@ -100,7 +104,7 @@ result = await full_pipeline(
 8. Call `export_model(session_id, output_dir, model_name)`
 9. Call `close_session(session_id)` when the step flow is complete
 
-## Safety constraints
+## Image pipeline safety constraints
 
 - `output_dir` must remain inside the project `output/` directory
 - For tests and controlled local runs, `LIVE2D_OUTPUT_ROOT` can point to another directory inside the project; MCP and CLI entrypoints will resolve `output_dir` under that root
