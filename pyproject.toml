@@ -32,6 +32,10 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+macos-cubism = [
+    "jpype1>=1.5,<2",
+    "websockets>=13.1,<16",
+]
 vision-cpu = [
     "mediapipe>=0.10.0",
     "rembg>=2.0.0",
@@ -55,6 +59,10 @@ dev = [
 [project.scripts]
 live2d-mcp = "mcp_server.server:main"
 live2d-run = "mcp_server.cli:main"
+live2d-cubism-api = "mcp_server.tools.cubism_editor_api:main"
+live2d-cubism-bridge = "mcp_server.tools.cubism_bridge_cli:main"
+live2d-cubism-widget = "mcp_server.tools.cubism_swing:main"
+live2d-cubism-export = "mcp_server.tools.cubism_export:main"
 
 [project.urls]
 Homepage = "https://github.com/J621111/live2d-automation"
@@ -66,7 +74,7 @@ where = ["."]
 include = ["core", "core.*", "mcp_server", "mcp_server.*"]
 
 [tool.setuptools.package-data]
-mcp_server = ["templates/*.json", "profiles/*.json"]
+mcp_server = ["templates/*.json", "profiles/*.json", "java/*.java"]
 
 [tool.black]
 line-length = 100
@@ -107,7 +115,7 @@ python_version = "3.10"
 warn_return_any = true
 warn_unused_configs = true
 follow_imports = "normal"
-exclude = '(?x)(^output(?:[\\/]|$)|^\.pytest_tmp(?:[\\/]|$)|^\.pytest_tmp_workspace(?:[\\/]|$)|^pytest-cache-files-.*)'
+exclude = '(?x)(^build(?:[\\/]|$)|^dist(?:[\\/]|$)|^output(?:[\\/]|$)|^\.pytest_tmp(?:[\\/]|$)|^\.pytest_tmp_workspace(?:[\\/]|$)|^pytest-cache-files-.*)'
 
 [[tool.mypy.overrides]]
 module = ["face_recognition", "mediapipe", "rembg", "scipy", "scipy.*"]
